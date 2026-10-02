@@ -134,7 +134,7 @@ def _fold(text: str) -> str:
 
 def _raw(sid: int, s: dict[str, Any]) -> dict[str, Any]:
     core = {
-        "survey_uid": sid,
+        "catalog_id": sid,
         "idno": s["idno"],
         "title": s["title"],
         "nation": s["nation"],

@@ -13,7 +13,7 @@ from nada_ai.settings import Settings
 
 def _variable(uid: int, sid: int = 5, idno: str = "S-1") -> dict:
     return {
-        "core_fields": {"uid": uid, "sid": sid, "idno": idno, "name": f"v{uid}", "label": f"label {uid}"},
+        "core_fields": {"uid": uid, "catalog_id": sid, "idno": idno, "name": f"v{uid}", "label": f"label {uid}"},
         "filters": {"published": 1},
     }
 

@@ -19,7 +19,7 @@ from nada_ai.search.backend.opensearch.studies import study_bulk_action, study_t
 from nada_ai.settings import Settings
 
 CORE = {
-    "survey_uid": 4,
+    "catalog_id": 4,
     "idno": "PC11_A02-28-v22",
     "title": "Census of India 2011",
     "nation": "India",
@@ -68,7 +68,7 @@ def test_study_document_filters_are_one_flat_field_per_key() -> None:
 
 def test_study_document_needs_an_idno() -> None:
     with pytest.raises(ValueError, match="idno"):
-        study_to_source(4, {"survey_uid": 4}, {})
+        study_to_source(4, {"catalog_id": 4}, {})
 
 
 def test_study_bulk_action_id_is_the_sid() -> None:
@@ -228,7 +228,7 @@ class _Embedding:
 def _studies() -> list[pipeline.StudyExtract]:
     return [
         pipeline.StudyExtract(sid=4, core_fields=CORE, filters=FILTERS, chunks=2),  # chunk-1 and chunk-2 below
-        pipeline.StudyExtract(sid=2, core_fields={**CORE, "survey_uid": 2, "idno": "EGY"}, filters={}),  # no chunks
+        pipeline.StudyExtract(sid=2, core_fields={**CORE, "catalog_id": 2, "idno": "EGY"}, filters={}),  # no chunks
     ]
 
 

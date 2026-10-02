@@ -92,7 +92,7 @@ STUDIES: dict[int, dict[str, Any]] = {
 def raw_for(sid: int, s: dict[str, Any]) -> dict[str, Any]:
     return {
         "_extract_core_fields": {
-            "survey_uid": sid,
+            "catalog_id": sid,
             "idno": f"NADA_{sid}",
             "title": s["title"],
             "nation": "Somewhere",

@@ -125,11 +125,11 @@ def _study_extract(raw: dict[str, Any] | None) -> StudyExtract:
     raw = raw if isinstance(raw, dict) else {}
     core = raw.get("_extract_core_fields")
     try:
-        sid = int(core["survey_uid"])
+        sid = int(core["catalog_id"])
     except (KeyError, TypeError, ValueError):
         sid = 0
     if sid <= 0:
-        raise StudyExtractError("metadata-extract data has no valid core_fields.survey_uid (the NADA internal id)")
+        raise StudyExtractError("metadata-extract data has no valid core_fields.catalog_id (the NADA internal id)")
     if not str(core.get("idno") or "").strip():
         raise StudyExtractError("metadata-extract data has no core_fields.idno")
     filters = raw.get("_extract_filters")

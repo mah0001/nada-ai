@@ -107,7 +107,7 @@ STUDIES: dict[int, dict[str, Any]] = {
 def _raw(sid: int, s: dict[str, Any]) -> dict[str, Any]:
     return {
         "_extract_core_fields": {
-            "survey_uid": sid,
+            "catalog_id": sid,
             "idno": s["idno"],
             "title": s["title"],
             "nation": s["nation"],
