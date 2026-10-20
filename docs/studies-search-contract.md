@@ -59,6 +59,7 @@ Examples: `request_minimal.json`, `request_query.json`, `request_browse_all_filt
 | `sort` | `{by, order}` \| null | null | See 5.3. |
 | `limit` | int 1..100 | 15 | |
 | `offset` | int 0..10000 | 0 | |
+| `cursor` | string \| null | null | Browse only: a `next_cursor`/`prev_cursor` of an earlier page of the same browse, in place of `offset` (6.1). |
 | `include_facets` | bool | false | Reserved for dynamic filters. `true` gives `unsupported_capability` unless `capabilities.facets`. |
 | `include_debug` | bool | false | Adds an engine-specific `debug` object to the response. |
 
@@ -119,11 +120,13 @@ Examples: `response_hybrid.json`, `response_browse.json`, `response_types_filter
 |---|---|
 | `engine` | Engine that answered |
 | `found` | Studies in the pageable result set (6.1) |
-| `limit`, `offset` | Echo of the paging window |
-| `truncated` | True when `found` exceeds `limits.max_offset`: only that many results can be paged |
+| `limit`, `offset` | Echo of the paging window (`offset`: where the page starts, also on a page reached by cursor) |
+| `truncated` | True when a search other than a browse finds more than `limits.max_offset`: only that many can be paged |
+| `max_offset` | Rows reachable by `offset` (10,000) |
+| `next_cursor`, `prev_cursor` | Browse only: cursors of the next and previous pages (null at either end, and always null for a query) |
 | `search_counts_by_type` | Distinct studies per NADA dataset type in the result set, **ignoring the `types` filter** (tab counts) |
 | `hits[]` | `sid`, `idno`, `rank` (1-based across the whole set), `score`, `matched_by`, optional `passages` |
-| `applied` | Effective `query`, `mode`, `filters`, `sort`, `limit`, `offset` |
+| `applied` | Effective `query`, `mode`, `filters`, `sort`, `limit`, `offset`, `paging` (`offset` or `cursor`) |
 | `warnings[]` | `{code, message}`; codes `semantic_unavailable`, `sort_adjusted` |
 | `timing_ms` | Optional timings |
 | `debug` | Present only when requested |
@@ -147,7 +150,15 @@ studies (`page` is 1-based, `excerpt` is whitespace-normalised text); it replace
 - **Nothing is cut.** The keyword matches are never capped: `found` counts all of them. Only the semantic side is bounded
   (`limits.semantic_window`, starting at 50), because a vector search always has nearest studies.
 - **Paging depth.** `offset + limit` must be at most `limits.max_offset` (10,000) in every mode, and a larger request is
-  `offset_out_of_range`. `truncated` is true when `found` exceeds that depth, so the last results cannot be paged.
+  `offset_out_of_range`. A query never finds that many studies in practice; when one does, `truncated` is true and the
+  rest cannot be paged.
+- **Browsing past 10,000 studies** (no query) continues by cursor: every browse page returns `next_cursor` and
+  `prev_cursor`; send one as `cursor`, with the same filters and sort, in place of `offset`. It is OpenSearch
+  `search_after` on the browse's sort, which always ends on `sid` (a previous page reads the sort reversed and flips it
+  back), so every page costs the same at any depth; `found` and the per-type counts stay exact on every page. A cursor
+  is opaque, unsigned, never expires; one that does not fit the sort is `cursor_invalid`, and a cursor sent with a
+  query is `invalid_request` (relevance orders, fused in `hybrid`, have nothing a cursor could continue from). Same
+  format as the variable search's (`nada_ai.search.cursor`).
 - **Order in `hybrid` with a relevance sort.** The best keyword matches (`fusion_window`, starting at 50) and the semantic
   studies are fused by rank (reciprocal rank fusion, equal weights): a study found by both comes first and the two lists
   otherwise alternate. Ahead of that fused order, for a query of at least three real words (stopwords aside), any keyword
@@ -194,6 +205,7 @@ All errors on these routes use one envelope and never the framework default:
 | `unknown_filter` | 422 | A filter key is not in the registry (`details.filters`, `details.supported`) |
 | `invalid_filter_value` | 422 | A filter value is malformed or out of range (`details.filter`) |
 | `offset_out_of_range` | 422 | `offset + limit` is beyond what the mode can page |
+| `cursor_invalid` | 422 | A `cursor` that is not one of this browse (unreadable, edited, another sort): start again from the first page |
 | `unsupported_capability` | 501 | The active engine cannot do this (for example `studies_search` on Qdrant) |
 | `index_not_ready` | 503 | Index missing, empty or being rebuilt |
 | `backend_unavailable` | 503 | The engine cannot be reached, or access cannot be checked (no credential configured, key store unreadable) |
@@ -218,7 +230,7 @@ Encoded in `StudySearchResponse.invariant_violations()` and reused by the implem
 
 - Hit ranks are contiguous from `offset + 1`; `len(hits) <= limit`; `offset + len(hits) <= found`; no duplicate `sid`.
 - Counts add up to `found` without a `types` filter; with one, `found` equals the sum over the selected types.
-- `truncated` is true exactly when `found` exceeds `max_offset`.
+- `truncated` is true exactly when a search other than a browse has `found` above `max_offset`.
 - Browse: no score or `matched_by`. Relevance: every hit has `matched_by`.
 - A nonsense query returns `found: 0` (acceptance test in step 7).
 

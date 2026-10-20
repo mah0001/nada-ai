@@ -198,7 +198,7 @@ STUDY_ALL_TEXT_FIELD = "all_text"
 #: every field not kept here): their documents are always rewritten whole. The chunk index is updated in place (its
 #: filters) and keeps its full ``_source``.
 STUDY_SOURCE_FIELDS = ["sid", "idno", "title", "filter_facets"]
-VARIABLE_SOURCE_FIELDS = ["uid", "sid", "published"]
+VARIABLE_SOURCE_FIELDS = ["uid", "sid"]
 CITATION_SOURCE_FIELDS = ["citation_id", "uuid"]
 
 
@@ -309,11 +309,10 @@ VARIABLE_TEXT_FIELDS = ("name", "label", "question", "categories")
 def variables_index_body() -> dict[str, Any]:
     """OpenSearch settings + mappings of the **variable** index: one document per variable, ``_id`` = ``uid``.
 
-    Denormalized with the owning study's fields (no join at query time), following NADA's own, separate variable
-    indexer (``OpenSearch_variable_indexer.php``) for the field set. Lexical only: ``name``/``label``/``question``/
-    ``categories`` are searched; ``idno``/``title``/``nation`` are stored for display, not matched (NADA's own
-    variable search does not match on them either). Sorting uses ``name.sort`` and ``title``, both normalized
-    (case- and accent-insensitive): a ``text`` field cannot be sorted on.
+    The variable only, plus its study's ``title`` to sort by: everything else about the study is read from the study
+    index at search time (``variables_search.allowed_sids``). Lexical only: ``name``/``label``/``question``/
+    ``categories`` are searched. Sorting uses ``name.sort`` and ``title``, both normalized (case- and
+    accent-insensitive): a ``text`` field cannot be sorted on.
     """
     return {
         "settings": {
@@ -338,22 +337,13 @@ def variables_index_body() -> dict[str, Any]:
             "properties": {
                 "uid": {"type": "integer"},
                 "sid": {"type": "integer"},
-                "fid": {"type": "keyword"},
-                "vid": {"type": "keyword"},
                 **{field: {"type": "text", "analyzer": "nada_text"} for field in VARIABLE_TEXT_FIELDS},
                 "name": {
                     "type": "text",
                     "analyzer": "nada_text",
                     "fields": {"sort": {"type": "keyword", "normalizer": "nada_sort", "ignore_above": 256}},
                 },
-                "idno": {"type": "keyword"},
                 "title": {"type": "keyword", "normalizer": "nada_sort"},
-                "nation": {"type": "keyword"},
-                "dataset_type": {"type": "keyword"},
-                "published": {"type": "integer"},
-                "year_start": {"type": "integer"},
-                "year_end": {"type": "integer"},
-                "countries": {"type": "integer"},
             },
         },
     }

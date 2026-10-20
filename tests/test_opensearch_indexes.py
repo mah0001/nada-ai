@@ -349,7 +349,8 @@ def test_writer_installs_every_index_template_when_enabled() -> None:
     settings = Settings(index_name="chunks", opensearch_put_composable_index_template=True)
     client = _client()
     _run_writer(settings, client, recreate=False, bulk_results=[(0, []), (0, [])])
-    assert client.indices.put_index_template.call_count == 4
+    installed = {c.kwargs["name"] for c in client.indices.put_index_template.call_args_list}
+    assert len(installed) == 4  # chunks, studies, variables, citations (creating an index installs its own again)
 
 
 def test_writer_run_bulk_loads_no_model_when_embeddings_are_disabled() -> None:

@@ -62,11 +62,14 @@ from nada_ai.ingest.service import (
     delete_by_idno_op,
     index_from_catalog_op,
     put_index_template_op,
+    recreate_citations_op,
+    recreate_variables_op,
     setup_ingest_pipeline_op,
     sync_citations_op,
     sync_variables_op,
 )
 from nada_ai.search.backend.opensearch.generation import forget_index_generation
+from nada_ai.search.backend.opensearch.index_template import template_of
 from nada_ai.search.backend.opensearch.mapping import EMBEDDING_FIELD, metadata_field
 from nada_ai.search.backend.opensearch.ml.setup import ingest_pipeline_definition
 
@@ -572,20 +575,35 @@ async def admin_citations_stats(s: AppState = Depends(get_state)) -> dict[str, A
     }
 
 
+async def _published_sids(s: AppState) -> list[int]:
+    """The published studies' ids, read from the study index (none while it is missing or empty): the studies whose
+    variables search can return."""
+    from nada_ai.app.studies_schemas import StudyFilters
+    from nada_ai.search.backend.opensearch.variables_search import IndexNotReady, allowed_sids
+
+    try:
+        return await allowed_sids(s.client, s.settings.studies_index, StudyFilters(), s.settings.search_timeout_seconds)
+    except IndexNotReady:
+        return []
+    except Exception as e:
+        logger.error("published studies read failed: %s", e)
+        raise HTTPException(status_code=503, detail="backend unavailable") from e
+
+
 @admin_router.get("/admin/variables/stats", dependencies=[Depends(require_role(Role.read))])
 async def admin_variables_stats(s: AppState = Depends(get_state)) -> dict[str, Any]:
-    """What the variable index holds: published variables and the studies they belong to.
+    """What the variable index holds: variables of published studies and the studies they belong to.
 
-    Counts published documents only, since that is what NADA's own total counts and what search can return. Totals
-    only — a per-study breakdown is a different (paged) question. ``exists`` is false until the first variable sync
-    creates the index, which is a normal state and not an error.
+    Counts the variables search can return (of the studies the study index has as published), since that is what
+    NADA's own total counts. Totals only — a per-study breakdown is a different (paged) question. ``exists`` is false
+    until the first variable sync creates the index, which is a normal state and not an error.
     """
     _require_engine(s, "opensearch")
     name = s.settings.variables_index
     body = {
         "size": 0,
         "track_total_hits": True,
-        "query": {"term": {"published": 1}},
+        "query": {"terms": {"sid": await _published_sids(s)}},
         "aggs": {"studies": {"cardinality": {"field": "sid", "precision_threshold": 40000}}},
     }
     try:
@@ -613,13 +631,14 @@ async def admin_variables_by_study(s: AppState = Depends(get_state)) -> dict[str
     """
     _require_engine(s, "opensearch")
     name = s.settings.variables_index
+    published = {"terms": {"sid": await _published_sids(s)}}
     studies: dict[str, int] = {}
     after: dict[str, Any] | None = None
     while True:
         composite: dict[str, Any] = {"size": 5000, "sources": [{"sid": {"terms": {"field": "sid"}}}]}
         if after is not None:
             composite["after"] = after
-        body = {"size": 0, "query": {"term": {"published": 1}}, "aggs": {"by_study": {"composite": composite}}}
+        body = {"size": 0, "query": published, "aggs": {"by_study": {"composite": composite}}}
         try:
             resp = await s.client.search(index=name, body=body)
         except NotFoundError:
@@ -743,6 +762,10 @@ async def admin_studies_index_recreate(
     name = s.settings.studies_index
     body = new_studies_index_body()
     try:
+        if s.settings.opensearch_put_composable_index_template:
+            # an old template would be merged into the new index (see index_template.put_index_template_of)
+            template_name, template_body = template_of(s.settings, name)
+            await s.client.indices.put_index_template(name=template_name, body=template_body)
         for attempt in range(_RECREATE_ATTEMPTS):
             try:
                 await s.client.indices.delete(index=name)
@@ -762,6 +785,76 @@ async def admin_studies_index_recreate(
         forget_index_generation()  # NADA must be sent the index's generation from the next request on
     await audit_log(s, principal, action="index.studies.recreate", target=name, status="ok")
     return {"index": name, "recreated": True, "generation": body["mappings"]["_meta"]["generation"]}
+
+
+async def _submit_recreate(
+    s: AppState, principal: Principal, *, what: str, op, index: str, confirm: bool
+) -> JSONResponse:
+    """Run ``op`` (drop ``index``, create it with the current mapping, index everything again) as one background job,
+    single-flighted with the whole-catalog sync of ``what`` (``variables``/``citations``): while that runs, 409 and
+    nothing is dropped."""
+    if not confirm:
+        raise HTTPException(status_code=400, detail=f"add ?confirm=true to recreate the {what[:-1]} index")
+    _require_engine(s, "opensearch")
+    settings = s.settings
+    job_id = uuid.uuid4().hex
+    cancel_token = CancelToken()
+
+    async def factory() -> dict[str, Any]:
+        return await asyncio.to_thread(
+            op,
+            settings,
+            progress_cb=functools.partial(s.jobs.set_progress, job_id),
+            cancel_token=cancel_token,
+        )
+
+    return await _submit_or_409(
+        s,
+        kind=f"recreate_{what}",
+        key=f"index_{what}:all",
+        factory=factory,
+        params={"index": index},
+        principal=principal,
+        job_id=job_id,
+        cancel_token=cancel_token,
+    )
+
+
+@admin_router.post("/admin/index/variables/recreate")
+async def admin_variables_index_recreate(
+    confirm: bool = Query(default=False, description="Must be true to actually recreate the variable index."),
+    s: AppState = Depends(get_state),
+    principal: Principal = Depends(require_role(Role.admin)),
+) -> JSONResponse:
+    """Drop the variable index, create it empty with the current mapping, and index every variable again, as one
+    background job (Jobs page, progress, cancel).
+
+    For a change to the variable mapping, which an existing index never takes. The chunk, study and citation indexes
+    are kept. Variable search has little or nothing to find until the job is done. Single-flighted with a
+    whole-catalog variable sync (``POST /admin/variables/sync`` without idnos): while one runs, this answers 409 and
+    drops nothing.
+    """
+    return await _submit_recreate(
+        s, principal, what="variables", op=recreate_variables_op, index=s.settings.variables_index, confirm=confirm
+    )
+
+
+@admin_router.post("/admin/index/citations/recreate")
+async def admin_citations_index_recreate(
+    confirm: bool = Query(default=False, description="Must be true to actually recreate the citation index."),
+    s: AppState = Depends(get_state),
+    principal: Principal = Depends(require_role(Role.admin)),
+) -> JSONResponse:
+    """Drop the citation index, create it empty with the current mapping, and index every citation again, as one
+    background job (Jobs page, progress, cancel).
+
+    For a change to the citation mapping. The chunk, study and variable indexes are kept. Citation search has little
+    or nothing to find until the job is done. Single-flighted with a whole-catalog citation sync
+    (``POST /admin/citations/sync`` without ids): while one runs, this answers 409 and drops nothing.
+    """
+    return await _submit_recreate(
+        s, principal, what="citations", op=recreate_citations_op, index=s.settings.citations_index, confirm=confirm
+    )
 
 
 async def _qdrant_docs(s: AppState, idno: str) -> dict[str, Any]:

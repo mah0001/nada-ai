@@ -25,7 +25,9 @@ from nada_ai.ingest.extract_access import ExtractError, request_kwargs
 from nada_ai.ingest.progress import CancelToken
 from nada_ai.nada.admin_auth import scrub_admin_credentials
 from nada_ai.search.backend.opensearch.client import build_client
+from nada_ai.search.backend.opensearch.index_template import put_index_template_of
 from nada_ai.search.backend.opensearch.mapping import new_index_generation, variables_index_body
+from nada_ai.search.backend.opensearch.recreate import recreate_index
 from nada_ai.search.backend.opensearch.studies import sids_for_idnos
 from nada_ai.search.backend.opensearch.variables import variable_bulk_action
 from nada_ai.settings import Settings
@@ -40,20 +42,26 @@ def ensure_variables_index(client: Any, settings: Settings) -> None:
         return
     body = variables_index_body()
     body["mappings"]["_meta"] = {"generation": new_index_generation()}
+    put_index_template_of(client, settings, name)
     client.indices.create(index=name, body=body)
+
+
+def recreate_variables_index(client: Any, settings: Settings) -> str:
+    """Drop the variable index and create it empty with the current mapping (and template); returns its new generation."""
+    put_index_template_of(client, settings, settings.variables_index)
+    return recreate_index(client, settings.variables_index, variables_index_body())
 
 
 def _bulk_actions(index: str, variables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     actions = []
     for variable in variables:
         core_fields = variable.get("core_fields")
-        filters = variable.get("filters")
-        if not isinstance(core_fields, dict) or not isinstance(filters, dict):
+        if not isinstance(core_fields, dict):
             continue
         uid = core_fields.get("uid")
         if uid is None:
             continue
-        actions.append(variable_bulk_action(index, int(uid), core_fields, filters))
+        actions.append(variable_bulk_action(index, int(uid), core_fields))
     return actions
 
 
@@ -99,8 +107,8 @@ def sync_survey_variables_op(
     ``sid`` when the caller knows it, else the study index's sid for ``idno``; its variables are fetched and replaced
     by that id.
 
-    Best fit after that study's own document is (re)indexed, so a search never shows a variable of an unpublished or
-    deleted study. The study's variables are fetched a page at a time (a study can have far more than fit in one
+    Whether its variables are searchable is the study's business (its published state and filters are read from the
+    study index at search time), so this only writes the variables themselves. The study's variables are fetched a page at a time (a study can have far more than fit in one
     response), and the first page is fetched and built into documents **before** anything is deleted: a study that
     cannot be read (unknown idno, NADA unreachable) or whose first page cannot be built (a field the extract no
     longer sends) leaves its existing variables alone instead of emptying them. A failure after that first page

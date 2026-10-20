@@ -90,9 +90,12 @@ def new_studies_index_body() -> dict[str, Any]:
 
 def ensure_studies_index(client, settings: Settings) -> None:
     """Create the study index if missing (stamped with a generation)."""
+    from nada_ai.search.backend.opensearch.index_template import put_index_template_of
+
     name = settings.studies_index
     if client.indices.exists(index=name):
         return
+    put_index_template_of(client, settings, name)
     client.indices.create(index=name, body=new_studies_index_body())
     forget_index_generation()  # NADA must be sent the new generation from the next request on
 

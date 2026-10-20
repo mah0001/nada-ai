@@ -64,5 +64,10 @@ does not send them (NADA serves citations from the engine its `search_engine` se
   first sync is a normal state.
 - **Lifecycle:** the citation index is independent of the study indexes. Recreating or dropping the study index does
   **not** touch it (citations do not depend on studies, and a rebuild does not re-ingest them).
+- **Recreating the citation index only:** `POST /admin/index/citations/recreate?confirm=true` (role `admin`,
+  OpenSearch only) drops it, creates it empty with the current mapping and indexes every citation again, as one job
+  (kind `recreate_citations`). For a change to the citation mapping. Shares the single-flight key of a whole-catalog
+  sync (`index_citations:all`): while one runs it answers 409 and drops nothing. NADA's Semantic › Maintenance starts
+  it ("Rebuild the citation index", `POST /api/admin/semantic/citations_index_recreate`).
 - **Index name:** `<index_name>-citations`, or `NADA_CITATIONS_INDEX_NAME`.
 - **Not tracked:** the diff/stale views and search-index state reporting still cover studies only.
