@@ -821,6 +821,7 @@ def test_recreate_studies_index_drops_and_creates_only_the_study_index(monkeypat
     mock = MagicMock()
     mock.indices.delete = AsyncMock(return_value={"acknowledged": True})
     mock.indices.create = AsyncMock(return_value={"acknowledged": True})
+    mock.indices.put_index_template = AsyncMock(return_value={"acknowledged": True})
     r = _recreate_studies(mock)
     assert r.status_code == 200
     forget.assert_called_once()  # the next request to NADA carries the new generation, not a cached one
@@ -831,6 +832,9 @@ def test_recreate_studies_index_drops_and_creates_only_the_study_index(monkeypat
     assert created["index"] == "idx-studies"
     assert created["body"]["mappings"]["_meta"]["generation"] == body["generation"]
     assert "all_text" in created["body"]["mappings"]["properties"]
+    # the study index's current template first, or an old one would be merged into the new index
+    template = mock.indices.put_index_template.call_args.kwargs
+    assert template["body"]["index_patterns"] == ["idx-studies"]
 
 
 def test_recreate_studies_index_creates_it_when_missing(monkeypatch):
@@ -840,6 +844,7 @@ def test_recreate_studies_index_creates_it_when_missing(monkeypatch):
     mock = MagicMock()
     mock.indices.delete = AsyncMock(side_effect=NotFoundError(404, "index_not_found_exception", {}))
     mock.indices.create = AsyncMock(return_value={"acknowledged": True})
+    mock.indices.put_index_template = AsyncMock(return_value={"acknowledged": True})
     assert _recreate_studies(mock).status_code == 200
     mock.indices.create.assert_awaited_once()
 
@@ -892,16 +897,26 @@ def _variables_stats(monkeypatch, client_mock, backend="opensearch", path="/admi
             state.settings, state.client = prev_settings, prev_client
 
 
+def _published_studies(*sids):
+    """The study index's answer to "which studies are published" (variables_search.allowed_sids)."""
+    buckets = [{"key": sid, "doc_count": 1} for sid in sids]
+    return {"aggregations": {"sids": {"buckets": buckets, "sum_other_doc_count": 0}}}
+
+
 def test_variables_stats_reports_published_variables_and_studies(monkeypatch):
     mock = MagicMock()
     mock.search = AsyncMock(
-        return_value={"hits": {"total": {"value": 2080}}, "aggregations": {"studies": {"value": 2}}}
+        side_effect=[
+            _published_studies(7, 9),
+            {"hits": {"total": {"value": 2080}}, "aggregations": {"studies": {"value": 2}}},
+        ]
     )
     r = _variables_stats(monkeypatch, mock)
     assert r.status_code == 200
     assert r.json() == {"index": "idx-variables", "exists": True, "variables": 2080, "studies": 2}
     body = mock.search.call_args.kwargs["body"]
-    assert body["query"] == {"term": {"published": 1}}  # what NADA's own total counts, and all search can return
+    # the variables of the studies the study index has as published: what NADA's own total counts, and search returns
+    assert body["query"] == {"terms": {"sid": [7, 9]}}
     assert body["size"] == 0
 
 
@@ -931,13 +946,20 @@ def test_variables_by_study_reads_every_page_of_the_composite_aggregation(monkey
         return {"aggregations": {"by_study": agg}}
 
     mock = MagicMock()
-    mock.search = AsyncMock(side_effect=[page([(7, 120), (9, 3)], after=9), page([(12, 40)], after=12), page([])])
+    mock.search = AsyncMock(
+        side_effect=[
+            _published_studies(7, 9, 12),
+            page([(7, 120), (9, 3)], after=9),
+            page([(12, 40)], after=12),
+            page([]),
+        ]
+    )
     r = _by_study(monkeypatch, mock)
 
     assert r.status_code == 200
     assert r.json() == {"index": "idx-variables", "exists": True, "studies": {"7": 120, "9": 3, "12": 40}}
-    first, second, _ = (c.kwargs["body"] for c in mock.search.call_args_list)
-    assert first["query"] == {"term": {"published": 1}} and "after" not in first["aggs"]["by_study"]["composite"]
+    _, first, second, _ = (c.kwargs["body"] for c in mock.search.call_args_list)
+    assert first["query"] == {"terms": {"sid": [7, 9, 12]}} and "after" not in first["aggs"]["by_study"]["composite"]
     assert second["aggs"]["by_study"]["composite"]["after"] == {"sid": 9}
 
 
@@ -1002,6 +1024,72 @@ def test_variables_sync_rejects_an_empty_idno_list_rather_than_meaning_everythin
 
 def test_variables_sync_is_501_on_qdrant(monkeypatch):
     assert _post_variables_sync(monkeypatch, {}, backend="qdrant").status_code == 501
+
+
+_REBUILDS = {
+    # what: (sync route, sync body, the sync op and the recreate op replaced in nada_ai.app.admin)
+    "variables": ("/admin/variables/sync", {}, "sync_variables_op", "recreate_variables_op"),
+    "citations": ("/admin/citations/sync", {}, "sync_citations_op", "recreate_citations_op"),
+}
+
+
+def _post_recreate(monkeypatch, what, *, confirm=True, backend="opensearch", sync_first=False):
+    """POST /admin/index/<what>/recreate with the operations replaced; ``sync_first`` starts a whole-catalog sync of
+    the same kind that is still running when the recreate is asked for."""
+    import threading
+
+    import nada_ai.app.admin as admin_module
+
+    sync_route, sync_body, sync_op, recreate_op = _REBUILDS[what]
+    monkeypatch.setenv("NADA_ADMIN_AUTH_DISABLED", "true")
+    release = threading.Event()
+    recreated: list[bool] = []
+
+    def fake_sync(settings, ids, *, progress_cb=None, cancel_token=None):
+        release.wait(5)
+        return {"scope": "all", "indexed": 0, "errors": [], "error_count": 0}
+
+    def fake_recreate(settings, *, progress_cb=None, cancel_token=None):
+        recreated.append(True)
+        return {"generation": "g", "indexed": 0}
+
+    monkeypatch.setattr(admin_module, sync_op, fake_sync)
+    monkeypatch.setattr(admin_module, recreate_op, fake_recreate)
+    with TestClient(app) as client:
+        _fresh_state()
+        prev = state.settings
+        state.settings = Settings(search_backend=backend)
+        try:
+            if sync_first:
+                assert client.post(sync_route, json=sync_body).status_code == 202
+            query = "?confirm=true" if confirm else ""
+            response = client.post(f"/admin/index/{what}/recreate{query}")
+        finally:
+            release.set()
+            state.settings = prev
+    return response, recreated
+
+
+@pytest.mark.parametrize("what", ["variables", "citations"])
+def test_index_recreate_runs_as_a_job_single_flighted_with_a_full_sync(monkeypatch, what):
+    r, _ = _post_recreate(monkeypatch, what)
+    assert r.status_code == 202
+    job = r.json()
+    assert (job["kind"], job["key"]) == (f"recreate_{what}", f"index_{what}:all")
+
+
+@pytest.mark.parametrize("what", ["variables", "citations"])
+def test_index_recreate_drops_nothing_while_a_full_sync_runs(monkeypatch, what):
+    r, recreated = _post_recreate(monkeypatch, what, sync_first=True)
+    assert r.status_code == 409
+    assert r.json()["job"]["kind"] == f"index_{what}"
+    assert recreated == []
+
+
+@pytest.mark.parametrize("what", ["variables", "citations"])
+def test_index_recreate_requires_confirm_and_opensearch(monkeypatch, what):
+    assert _post_recreate(monkeypatch, what, confirm=False)[0].status_code == 400
+    assert _post_recreate(monkeypatch, what, backend="qdrant")[0].status_code == 501
 
 
 def test_index_delete_requires_confirm(monkeypatch):
@@ -1564,6 +1652,7 @@ def _recreate_studies_index(monkeypatch, create_effects: list) -> tuple[Any, Mag
         mock = MagicMock()
         mock.indices.delete = AsyncMock(side_effect=[NotFoundError(404, "index_not_found_exception", {})] + [{}] * 5)
         mock.indices.create = AsyncMock(side_effect=create_effects)
+        mock.indices.put_index_template = AsyncMock(return_value={"acknowledged": True})
         state.client = mock
         try:
             r = client.post("/admin/index/studies/recreate?confirm=true")

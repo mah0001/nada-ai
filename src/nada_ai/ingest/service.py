@@ -323,8 +323,9 @@ def apply_study_options_op(settings: Settings, idno: str) -> dict[str, Any]:
 
     NADA sends ``upsert_partial`` for changes to a study's options (publish state, license, data class, links, DOI,
     featured, collections): fields around the metadata, never its text, so the study's chunks keep their vectors.
-    This rewrites the study document, replaces the flat ``filter_facets`` on the study's chunks, and sets
-    ``published`` on its variables, all from NADA's extract record. OpenSearch only.
+    This rewrites the study document and replaces the flat ``filter_facets`` on the study's chunks, both from NADA's
+    extract record. Its variables are not touched: variable search reads the study's state from the study index.
+    OpenSearch only.
 
     A study with no document in the index has nothing to update: ``{"updated": False, "reason": "not_indexed"}``, and
     the caller indexes it in full.
@@ -372,25 +373,11 @@ def apply_study_options_from_extract(
             refresh=True,
             conflicts="proceed",
         )
-        # The variable index keeps only ids and ``published`` in its _source, so it is never updated in place (that
-        # would drop every searchable field): when the study's published status changed, its variables are synced
-        # again from NADA instead. Nothing is embedded either way.
-        published = source[FILTER_FACETS_KEY].get("published") or []
-        published = int(published[0]) if published else 0
-        variables_resynced = False
-        if _indexed_variables_published(client, settings.variables_index, sid) not in (None, published):
-            from nada_ai.ingest.variables_index import sync_survey_variables_op
-
-            errors = sync_survey_variables_op(settings, idno, sid=sid)["errors"]
-            if errors:
-                raise RuntimeError(f"variables of {idno!r}: {len(errors)} write error(s), first: {errors[0]}")
-            variables_resynced = True
         return {
             "idno": idno,
             "updated": True,
             "sid": sid,
             "chunks_updated": int(chunks.get("updated") or 0),
-            "variables_resynced": variables_resynced,
         }
     finally:
         _close_quiet(client)
@@ -402,17 +389,6 @@ def _stored_all_text(client: Any, index: str, sid: int) -> list[str]:
 
     doc = client.get(index=index, id=str(sid), stored_fields=STUDY_ALL_TEXT_FIELD, _source=False)
     return list((doc.get("fields") or {}).get(STUDY_ALL_TEXT_FIELD) or [])
-
-
-def _indexed_variables_published(client: Any, index: str, sid: int) -> int | None:
-    """The ``published`` the variable index holds for a study's variables, or None when it holds none of them."""
-    resp = client.search(
-        index=index,
-        body={"size": 1, "_source": ["published"], "query": {"term": {"sid": sid}}},
-        ignore_unavailable=True,
-    )
-    hits = (resp.get("hits") or {}).get("hits") or []
-    return int(hits[0]["_source"].get("published") or 0) if hits else None
 
 
 def put_index_template_op(settings: Settings) -> dict[str, Any]:
@@ -589,6 +565,58 @@ def sync_variables_op(
         "error_count": len(errors),
         "cancelled": cancel_token is not None and cancel_token.is_set(),
     }
+
+
+def _recreate(settings: Settings, recreate: Callable[[Any, Settings], str]) -> str:
+    from nada_ai.search.backend.opensearch.client import build_client
+
+    client = build_client(settings)
+    try:
+        return recreate(client, settings)
+    finally:
+        client.close()
+
+
+def recreate_variables_op(
+    settings: Settings,
+    *,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
+    cancel_token: CancelToken | None = None,
+) -> dict[str, Any]:
+    """Drop the variable index, create it empty with the current mapping, and index every variable again.
+
+    Variable search has little or nothing to find until the walk is done. Returns ``sync_variables_op``'s result for
+    the whole catalog, plus ``recreated`` (the index) and ``generation``.
+    """
+    from nada_ai.ingest.variables_index import recreate_variables_index
+
+    generation = _recreate(settings, recreate_variables_index)
+    logger.info(
+        "variable index %s recreated (generation %s); indexing every variable", settings.variables_index, generation
+    )
+    result = sync_variables_op(settings, None, progress_cb=progress_cb, cancel_token=cancel_token)
+    return {"recreated": settings.variables_index, "generation": generation, **result}
+
+
+def recreate_citations_op(
+    settings: Settings,
+    *,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
+    cancel_token: CancelToken | None = None,
+) -> dict[str, Any]:
+    """Drop the citation index, create it empty with the current mapping, and index every citation again.
+
+    Citation search has little or nothing to find until the walk is done. Returns ``sync_citations_op``'s result for
+    the whole catalog, plus ``recreated`` (the index) and ``generation``.
+    """
+    from nada_ai.ingest.citations_index import recreate_citations_index
+
+    generation = _recreate(settings, recreate_citations_index)
+    logger.info(
+        "citation index %s recreated (generation %s); indexing every citation", settings.citations_index, generation
+    )
+    result = sync_citations_op(settings, None, progress_cb=progress_cb, cancel_token=cancel_token)
+    return {"recreated": settings.citations_index, "generation": generation, **result}
 
 
 def sync_citations_op(

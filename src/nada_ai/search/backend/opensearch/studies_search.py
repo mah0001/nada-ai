@@ -42,6 +42,7 @@ from nada_ai.search.backend.opensearch.studies_semantic import (
     parse_semantic,
     rrf_fuse,
 )
+from nada_ai.search.cursor import Cursor, Direction, SortValueKind, encode
 from nada_ai.search.query_heuristics import split_quoted
 
 #: Sort field -> the study-index field it orders by.
@@ -139,24 +140,79 @@ def types_post_filter(filters: StudyFilters) -> dict[str, Any] | None:
     return {"terms": {f"{FILTER_FACETS_KEY}.dataset_type": filters.types}} if filters.types else None
 
 
-def sort_clause(by: SortField, order: SortOrder) -> list[dict[str, Any]]:
-    """OpenSearch ``sort``: the chosen key, then the deterministic tie-breakers (never the same field twice)."""
+#: What each sorted field's values are, for checking a browse cursor (``nada_ai.search.cursor``).
+_SORT_VALUE_KINDS: dict[str, SortValueKind] = {
+    "title_sort": SortValueKind.text,
+    "nation_sort": SortValueKind.text,
+    "year_start": SortValueKind.number,
+    "total_views": SortValueKind.number,
+    "created": SortValueKind.number,
+    "changed": SortValueKind.number,
+    "sid": SortValueKind.id,
+}
+
+
+def _sort_keys(by: SortField, order: SortOrder) -> list[tuple[str, SortOrder]]:
     field_name = SORT_FIELDS[by]
     keys: list[tuple[str, SortOrder]] = [(field_name, order)]
-    keys += [(name, direction) for name, direction in _TIE_BREAKERS if name != field_name]
-    return [{name: {"order": direction.value, "missing": "_last"}} for name, direction in keys]
+    return keys + [(name, direction) for name, direction in _TIE_BREAKERS if name != field_name]
 
 
-def browse_body(filters: StudyFilters, by: SortField, order: SortOrder, limit: int, offset: int) -> dict[str, Any]:
+def sort_clause(by: SortField, order: SortOrder) -> list[dict[str, Any]]:
+    """OpenSearch ``sort``: the chosen key, then the deterministic tie-breakers (never the same field twice), ending
+    on ``sid`` so that no two studies tie (what a browse cursor needs)."""
+    return [{name: {"order": direction.value, "missing": "_last"}} for name, direction in _sort_keys(by, order)]
+
+
+def browse_sort_value_kinds(by: SortField, order: SortOrder) -> tuple[SortValueKind, ...]:
+    """What a browse cursor's sort values must hold for this sort (one kind per sorted field)."""
+    return tuple(_SORT_VALUE_KINDS[name] for name, _ in _sort_keys(by, order))
+
+
+def reverse_sort(clauses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The exact reverse of a ``sort``: every field flipped, and studies with no value moved from the end to the start,
+    which is how the page *before* a study is read."""
+    flipped = []
+    for clause in clauses:
+        ((name, spec),) = clause.items()
+        flipped.append(
+            {
+                name: {
+                    "order": "asc" if spec["order"] == "desc" else "desc",
+                    "missing": "_first" if spec.get("missing") == "_last" else "_last",
+                }
+            }
+        )
+    return flipped
+
+
+def browse_body(
+    filters: StudyFilters,
+    by: SortField,
+    order: SortOrder,
+    limit: int,
+    offset: int,
+    cursor: Cursor | None = None,
+) -> dict[str, Any]:
+    """A page of the filter-only listing: by ``offset``, or after (before) the study ``cursor`` points at. Every page
+    counts exactly (a browse is a filter over the study index: cheap) and carries the per-type counts."""
+    sort = sort_clause(by, order)
     body: dict[str, Any] = {
-        "from": offset,
-        "size": limit,
         "track_total_hits": True,
         "_source": ["sid", "idno"],
         "query": {"bool": {"filter": filter_clauses(filters)}},
-        "sort": sort_clause(by, order),
         "aggs": _type_aggregation(),
     }
+    if cursor is None:
+        body.update({"from": offset, "size": limit, "sort": sort})
+    else:
+        body.update(
+            {
+                "size": limit + 1,  # one more than a page: whether another page follows in that direction
+                "search_after": list(cursor.sort_values),
+                "sort": reverse_sort(sort) if cursor.direction is Direction.before else sort,
+            }
+        )
     if (post := types_post_filter(filters)) is not None:
         body["post_filter"] = post
     return body
@@ -199,6 +255,8 @@ class SearchJob:
     policy: StudyPolicy
     #: Turns the query into a vector; ``None`` when no local embedding backend exists.
     embed: EmbedFn | None = None
+    #: Browse only: the page after (before) the study this points at, in place of ``offset``.
+    cursor: Cursor | None = None
 
 
 @dataclass
@@ -210,6 +268,10 @@ class StudyPage:
     hits: list[dict[str, Any]]  # each {"sid", "idno", "score", "matched_by", optional "passages"}
     took_ms: float | None = None
     request_bodies: list[dict[str, Any]] = field(default_factory=list)
+    #: Where the page starts in the whole result list, when the executor knows it better than the request (a cursor).
+    offset: int | None = None
+    next_cursor: str | None = None
+    prev_cursor: str | None = None
 
 
 def _total(response: dict[str, Any]) -> int:
@@ -249,21 +311,44 @@ async def _raise_if_index_empty(job: SearchJob) -> None:
 
 
 async def browse(job: SearchJob) -> StudyPage:
-    """Filter-only listing: exact ``found``, exact per-type counts, deterministic order."""
-    body = browse_body(job.filters, job.sort_by, job.sort_order, job.limit, job.offset)
+    """Filter-only listing: exact ``found``, exact per-type counts, deterministic order, and the cursors of the next
+    and previous pages (a browse pages past ``max_offset`` with them)."""
+    body = browse_body(job.filters, job.sort_by, job.sort_order, job.limit, job.offset, job.cursor)
     response = await _search(job.client, job.index, body)
     found = _total(response)
     if found == 0:
         await _raise_if_index_empty(job)
+    raw = response["hits"]["hits"]
+
+    cursor = job.cursor
+    if cursor is None:
+        rows, offset = raw, job.offset
+        has_prev, has_next = offset > 0, offset + len(rows) < found
+    else:
+        more = len(raw) > job.limit
+        if cursor.direction is Direction.after:
+            rows, offset = raw[: job.limit], cursor.position
+            has_prev, has_next = cursor.position > 0, more
+        else:
+            rows = list(reversed(raw[: job.limit]))
+            offset = max(cursor.position - len(rows), 0) if more else 0  # nothing more before: the first page
+            has_prev, has_next = more, True
+
+    def cursor_from(row: dict[str, Any], direction: Direction, position: int) -> str:
+        return encode(Cursor(direction, tuple(row["sort"]), position, found, False))
+
     return StudyPage(
         found=found,
         counts_by_type=_by_type(response),
         hits=[
             {"sid": int(h["_source"]["sid"]), "idno": h["_source"]["idno"], "score": None, "matched_by": []}
-            for h in response["hits"]["hits"]
+            for h in rows
         ],
         took_ms=_took(response),
         request_bodies=[body],
+        offset=offset,
+        next_cursor=cursor_from(rows[-1], Direction.after, offset + len(rows)) if has_next and rows else None,
+        prev_cursor=cursor_from(rows[0], Direction.before, offset) if has_prev and rows else None,
     )
 
 

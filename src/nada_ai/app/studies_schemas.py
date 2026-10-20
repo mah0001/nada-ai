@@ -92,6 +92,7 @@ class ErrorCode(StrEnum):
     unknown_filter = "unknown_filter"
     invalid_filter_value = "invalid_filter_value"
     offset_out_of_range = "offset_out_of_range"
+    cursor_invalid = "cursor_invalid"
     unsupported_capability = "unsupported_capability"
     index_not_ready = "index_not_ready"
     backend_unavailable = "backend_unavailable"
@@ -100,6 +101,7 @@ class ErrorCode(StrEnum):
     unauthorized = "unauthorized"
     forbidden = "forbidden"
     rate_limited = "rate_limited"
+    search_timeout = "search_timeout"
 
 
 ERROR_HTTP_STATUS: dict[ErrorCode, int] = {
@@ -107,6 +109,7 @@ ERROR_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.unknown_filter: 422,
     ErrorCode.invalid_filter_value: 422,
     ErrorCode.offset_out_of_range: 422,
+    ErrorCode.cursor_invalid: 422,
     ErrorCode.unsupported_capability: 501,
     ErrorCode.index_not_ready: 503,
     ErrorCode.backend_unavailable: 503,
@@ -115,6 +118,7 @@ ERROR_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.unauthorized: 401,
     ErrorCode.forbidden: 403,
     ErrorCode.rate_limited: 429,
+    ErrorCode.search_timeout: 504,
 }
 
 
@@ -221,6 +225,11 @@ class StudySearchRequest(BaseModel):
     sort: StudySort | None = None
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
     offset: int = Field(default=0, ge=0, le=MAX_OFFSET)
+    cursor: str | None = Field(
+        default=None,
+        description="Browse only: a next_cursor or prev_cursor of an earlier page of this browse, in place of offset, "
+        "to page past max_offset",
+    )
     include_facets: bool = Field(default=False, description="Reserved; requires the ``facets`` capability")
     include_debug: bool = False
 
@@ -281,6 +290,7 @@ class Applied(BaseModel):
     sort: AppliedSort
     limit: int
     offset: int
+    paging: Literal["offset", "cursor"] = "offset"
 
 
 class ResponseWarning(BaseModel):
@@ -298,7 +308,13 @@ class StudySearchResponse(BaseModel):
     limit: int
     offset: int
     truncated: bool = Field(
-        description="True when ``found`` exceeds ``limits.max_offset``: only that many can be paged"
+        description="True when a search other than a browse finds more than ``max_offset`` studies: only that many "
+        "can be paged (a browse pages past them with its cursors)"
+    )
+    max_offset: int = Field(default=MAX_OFFSET, description="Rows reachable by offset; a browse continues by cursor")
+    next_cursor: str | None = Field(default=None, description="Browse only: cursor of the next page; null on the last")
+    prev_cursor: str | None = Field(
+        default=None, description="Browse only: cursor of the previous page; null on the first"
     )
     search_counts_by_type: dict[str, int] = Field(
         description="Distinct studies per NADA dataset type, ignoring the ``types`` filter"
@@ -330,8 +346,9 @@ class StudySearchResponse(BaseModel):
         elif sum(self.search_counts_by_type.values()) != self.found:
             problems.append("search_counts_by_type must add up to found when no types filter is applied")
 
-        if self.truncated != (self.found > MAX_OFFSET):
-            problems.append("truncated must be true exactly when found exceeds max_offset")
+        pageable = self.applied.mode == EffectiveMode.browse  # a browse pages past max_offset with its cursors
+        if self.truncated != (self.found > MAX_OFFSET and not pageable):
+            problems.append("truncated must be true exactly when a search other than a browse exceeds max_offset")
 
         if self.applied.mode == EffectiveMode.browse:
             if any(h.score is not None or h.matched_by for h in self.hits):
@@ -385,6 +402,10 @@ class Limits(BaseModel):
     max_offset: int
     semantic_window: int = Field(description="The most studies the semantic side adds to a relevance search")
     max_query_length: int
+    variables_max_offset: int = Field(description="Variable search: rows reachable by offset paging (then cursors)")
+    variables_count_cap: int = Field(
+        description="Variable search: matches counted exactly before found is a lower bound"
+    )
 
 
 class IndexInfo(BaseModel):

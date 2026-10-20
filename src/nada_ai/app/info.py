@@ -78,6 +78,8 @@ def limits_for(settings: Settings) -> Limits:
         max_offset=MAX_OFFSET,
         semantic_window=settings.studies_semantic_window,
         max_query_length=MAX_QUERY_LENGTH,
+        variables_max_offset=settings.variables_max_offset,
+        variables_count_cap=settings.variables_count_cap,
     )
 
 

@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     #: Study search: keep semantic matches scoring at least this fraction of the best semantic match.
     studies_semantic_relative_cutoff: float = Field(default=0.94, ge=0.0, le=1.0)
 
+    #: Variable search: rows reachable by offset paging (``offset + limit``); deeper pages use cursors (reported by
+    #: ``GET /info`` as ``limits.variables_max_offset``). At most OpenSearch's default ``max_result_window``, and at
+    #: least one full page of the largest size.
+    variables_max_offset: int = Field(default=1_000, ge=100, le=10_000)
+    #: Variable search: a query's matches are counted exactly up to this many, and reported as a lower bound
+    #: (``found_is_lower_bound``) beyond. A browse (no query) is always counted exactly. Counting is what a broad
+    #: query costs most on a large index.
+    variables_count_cap: int = Field(default=20_000, ge=100, le=10_000_000)
+    #: Seconds a search request to OpenSearch may take before it is abandoned and answered ``search_timeout``.
+    search_timeout_seconds: float = Field(default=5.0, gt=0, le=120)
+
     #: If True, ``PUT _index_template`` before index create / bulk ingest so auto-created indices inherit ``knn_vector`` mapping.
     opensearch_put_composable_index_template: bool = Field(default=True)
     #: Composable template ``priority`` (higher wins when multiple templates match).
@@ -296,6 +307,15 @@ class Settings(BaseSettings):
                 "embedding_backend none is not valid with search_backend=qdrant: a Qdrant collection is a vector "
                 "index, so a deployment with no embeddings has nothing for it to store or search. embedding_backend "
                 "none is only meaningful for a search_backend with its own lexical index (opensearch)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_variables_paging(self) -> Settings:
+        if self.variables_count_cap < self.variables_max_offset:
+            raise ValueError(
+                "variables_count_cap (NADA_VARIABLES_COUNT_CAP) must be at least variables_max_offset "
+                "(NADA_VARIABLES_MAX_OFFSET): every row offset paging reaches has to be counted"
             )
         return self
 

@@ -49,9 +49,11 @@ from nada_ai.search.backend.opensearch.studies_search import (
     IndexNotReady,
     SearchJob,
     StudyPage,
+    browse_sort_value_kinds,
     exact_idno_match,
 )
 from nada_ai.search.backend.opensearch.studies_semantic import StudyPolicy
+from nada_ai.search.cursor import Cursor, CursorError, decode
 from nada_ai.search.query_heuristics import has_quoted_phrase
 
 logger = logging.getLogger(__name__)
@@ -207,6 +209,31 @@ def _embedder(s: AppState) -> EmbedFn | None:
     return embed
 
 
+def _browse_cursor(body: StudySearchRequest, mode: EffectiveMode, sort: AppliedSort) -> Cursor | None:
+    """The request's cursor, checked against the browse's sort; without one, the offset is checked against
+    ``MAX_OFFSET``. A cursor pages a browse only: no keyword search ever finds more studies than offset paging reaches,
+    and a relevance order (fused, in hybrid) has nothing a cursor could continue from."""
+    if body.cursor is None:
+        if body.offset + body.limit > MAX_OFFSET:
+            raise StudiesApiError(
+                ErrorCode.offset_out_of_range,
+                f"offset + limit must be at most {MAX_OFFSET}",
+                {"max_offset": MAX_OFFSET},
+            )
+        return None
+    if mode is not EffectiveMode.browse:
+        raise StudiesApiError(ErrorCode.invalid_request, "A cursor pages a browse (no query) only")
+    if "offset" in body.model_fields_set:
+        raise StudiesApiError(ErrorCode.invalid_request, "Send either offset or cursor, not both")
+    try:
+        return decode(body.cursor, browse_sort_value_kinds(sort.by, sort.order))
+    except CursorError as e:
+        raise StudiesApiError(
+            ErrorCode.cursor_invalid,
+            f"The cursor is not one of this browse: {e}. Start again from the first page.",
+        ) from e
+
+
 async def _execute(
     body: StudySearchRequest,
     mode: EffectiveMode,
@@ -214,6 +241,7 @@ async def _execute(
     warnings: list[ResponseWarning],
     implemented: frozenset[str],
     s: AppState,
+    cursor: Cursor | None = None,
 ) -> tuple[EffectiveMode, AppliedSort, StudyPage]:
     """Run the resolved mode. If the query cannot be embedded, ``auto`` degrades to keyword search (and says so);
     an explicit ``semantic`` or ``hybrid`` request fails instead of silently answering something else.
@@ -234,6 +262,7 @@ async def _execute(
         offset=body.offset,
         policy=StudyPolicy.from_settings(s.settings),
         embed=_embedder(s),
+        cursor=cursor,
     )
     if mode is not EffectiveMode.browse and job.query is not None:
         exact = await exact_idno_match(job)
@@ -283,15 +312,10 @@ async def studies_search(
 
     mode = resolve_mode(body, engine, implemented)
     sort, warnings = resolve_sort(body, mode)
-    if body.offset + body.limit > MAX_OFFSET:
-        raise StudiesApiError(
-            ErrorCode.offset_out_of_range,
-            f"offset + limit must be at most {MAX_OFFSET}",
-            {"max_offset": MAX_OFFSET},
-        )
+    cursor = _browse_cursor(body, mode, sort)
 
     try:
-        mode, sort, page = await _execute(body, mode, sort, warnings, implemented, s)
+        mode, sort, page = await _execute(body, mode, sort, warnings, implemented, s, cursor)
     except IndexNotReady as e:
         raise StudiesApiError(
             ErrorCode.index_not_ready,
@@ -301,21 +325,26 @@ async def studies_search(
     except TransportError as e:
         raise opensearch_error("POST /studies/search", e) from e
 
+    offset = body.offset if page.offset is None else page.offset
     return StudySearchResponse(
         engine=engine,
         found=page.found,
         limit=body.limit,
-        offset=body.offset,
-        truncated=page.found > MAX_OFFSET,
+        offset=offset,
+        truncated=page.found > MAX_OFFSET and mode is not EffectiveMode.browse,
+        max_offset=MAX_OFFSET,
+        next_cursor=page.next_cursor,
+        prev_cursor=page.prev_cursor,
         search_counts_by_type=page.counts_by_type,
-        hits=[StudyHit(rank=body.offset + i + 1, **hit) for i, hit in enumerate(page.hits)],
+        hits=[StudyHit(rank=offset + i + 1, **hit) for i, hit in enumerate(page.hits)],
         applied=Applied(
             query=body.query,
             mode=mode,
             filters=body.filters.active(),
             sort=sort,
             limit=body.limit,
-            offset=body.offset,
+            offset=offset,
+            paging="offset" if cursor is None else "cursor",
         ),
         warnings=warnings,
         timing_ms={"total": round((time.perf_counter() - started) * 1000, 1), "engine": float(page.took_ms or 0)},
