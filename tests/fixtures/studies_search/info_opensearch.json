@@ -94,7 +94,8 @@
     "semantic_window": 50,
     "max_query_length": 500,
     "variables_max_offset": 1000,
-    "variables_count_cap": 20000
+    "variables_count_cap": 20000,
+    "search_timeout_seconds": 5.0
   },
   "index": {
     "name": "nada-metadata",

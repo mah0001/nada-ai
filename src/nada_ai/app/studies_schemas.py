@@ -406,6 +406,7 @@ class Limits(BaseModel):
     variables_count_cap: int = Field(
         description="Variable search: matches counted exactly before found is a lower bound"
     )
+    search_timeout_seconds: float = Field(description="Seconds a search request to OpenSearch may take")
 
 
 class IndexInfo(BaseModel):

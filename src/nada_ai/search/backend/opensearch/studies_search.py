@@ -257,6 +257,8 @@ class SearchJob:
     embed: EmbedFn | None = None
     #: Browse only: the page after (before) the study this points at, in place of ``offset``.
     cursor: Cursor | None = None
+    #: Seconds each OpenSearch request may take (setting ``search_timeout_seconds``).
+    timeout_seconds: float = 5.0
 
 
 @dataclass
@@ -283,9 +285,11 @@ def _took(response: dict[str, Any]) -> float:
     return float(response.get("took") or 0)
 
 
-async def _search(client: Any, index: str, body: dict[str, Any]) -> dict[str, Any]:
+async def _search(client: Any, index: str, body: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+    """One OpenSearch search, abandoned after ``timeout_seconds`` (``opensearchpy.ConnectionTimeout``: the route
+    answers ``search_timeout``, so one slow query is not mistaken for an outage)."""
     try:
-        return await client.search(index=index, body=body)
+        return await client.search(index=index, body=body, request_timeout=timeout_seconds)
     except NotFoundError as e:
         raise IndexNotReady(index) from e
 
@@ -314,7 +318,7 @@ async def browse(job: SearchJob) -> StudyPage:
     """Filter-only listing: exact ``found``, exact per-type counts, deterministic order, and the cursors of the next
     and previous pages (a browse pages past ``max_offset`` with them)."""
     body = browse_body(job.filters, job.sort_by, job.sort_order, job.limit, job.offset, job.cursor)
-    response = await _search(job.client, job.index, body)
+    response = await _search(job.client, job.index, body, job.timeout_seconds)
     found = _total(response)
     if found == 0:
         await _raise_if_index_empty(job)
@@ -568,7 +572,7 @@ async def exact_idno_match(job: SearchJob) -> StudyPage | None:
         "query": {"bool": {"filter": [*filters, {"term": {"idno": token}}]}},
         "sort": [{"sid": {"order": "asc"}}],
     }
-    response = await _search(job.client, job.index, body)
+    response = await _search(job.client, job.index, body, job.timeout_seconds)
     hits = response["hits"]["hits"]
     if not hits:
         return None
@@ -605,7 +609,7 @@ async def lexical(job: SearchJob) -> StudyPage:
         else sort_clause(job.sort_by, job.sort_order)
     )
     body = keyword_body(job.query, job.filters, sort=sort, limit=job.limit, offset=job.offset)
-    response = await _search(job.client, job.index, body)
+    response = await _search(job.client, job.index, body, job.timeout_seconds)
     found = _total(response)
     if found == 0:
         await _raise_if_index_empty(job)
@@ -663,7 +667,7 @@ async def _enrich(job: SearchJob, ranked: list[Ranked]) -> tuple[list[Ranked], f
         "_source": ["sid", "idno", f"{FILTER_FACETS_KEY}.dataset_type"],
         "query": {"bool": {"filter": [*filter_clauses(job.filters), {"terms": {"sid": missing}}]}},
     }
-    response = await _search(job.client, job.index, body)
+    response = await _search(job.client, job.index, body, job.timeout_seconds)
     known = {int(h["_source"]["sid"]): (h["_source"]["idno"], _dataset_type(h)) for h in response["hits"]["hits"]}
     kept: list[Ranked] = []
     for r in ranked:
@@ -680,7 +684,7 @@ async def _semantic_block(job: SearchJob) -> tuple[list[Ranked], float, list[dic
     best first, each with NADA's idno and type. Raises ``EmbeddingUnavailable`` before any search runs."""
     vector = await _embed(job)
     body = knn_body(vector, filter_clauses(job.filters, CHUNK_FIELDS), job.policy)
-    response = await _search(job.client, job.chunk_index, body)
+    response = await _search(job.client, job.chunk_index, body, job.timeout_seconds)
     hits = apply_semantic_policy(parse_semantic(response, job.policy), job.policy)
     hits, took_lookup, lookup = await _enrich(job, hits)
     return hits, _took(response) + took_lookup, [_debug_body(body), *lookup]
@@ -731,7 +735,7 @@ async def _keyword_matches_among(job: SearchJob, sids: list[int]) -> tuple[set[i
             }
         },
     }
-    response = await _search(job.client, job.index, body)
+    response = await _search(job.client, job.index, body, job.timeout_seconds)
     return {int(h["_source"]["sid"]) for h in response["hits"]["hits"]}, _took(response), body
 
 
@@ -792,7 +796,7 @@ async def hybrid(job: SearchJob) -> StudyPage:
             offset=job.offset,
             union_sids=block_ids,
         )
-        response = await _search(job.client, job.index, body)
+        response = await _search(job.client, job.index, body, job.timeout_seconds)
         return StudyPage(
             found=_total(response),
             counts_by_type=_by_type(response),
@@ -815,7 +819,7 @@ async def hybrid(job: SearchJob) -> StudyPage:
         offset=0,
     )
     (agree, took_agree, body_agree), head_response = await asyncio.gather(
-        _keyword_matches_among(job, block_ids), _search(job.client, job.index, head_body)
+        _keyword_matches_among(job, block_ids), _search(job.client, job.index, head_body, job.timeout_seconds)
     )
     keyword_head = [_keyword_ranked(h) for h in head_response["hits"]["hits"]]
     fused = rrf_fuse(keyword_head, block)
@@ -847,7 +851,7 @@ async def hybrid(job: SearchJob) -> StudyPage:
         offset=tail_offset,
         exclude_sids=[r.sid for r in fused],
     )
-    response = await _search(job.client, job.index, body)
+    response = await _search(job.client, job.index, body, job.timeout_seconds)
     tail_found = _total(response)
     tail_hits = [_hybrid_hit(_keyword_hit(h)) for h in response["hits"]["hits"]] if tail_rows > 0 else []
 
