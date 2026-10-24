@@ -63,19 +63,3 @@ def study_bulk_action(index: str, sid: int, core_fields: dict[str, Any], filters
         "_id": str(int(sid)),
         "_source": study_to_source(sid, core_fields, filters),
     }
-
-
-def sids_for_idnos(client: Any, studies_index: str, idnos: list[str]) -> dict[str, int]:
-    """``{idno: sid}`` for the given NADA idnos, from the study index (which stores NADA's own idno).
-
-    Chunk documents carry the record's schema idno, which can differ, so anything that must reach every chunk of
-    a study by NADA idno goes through the ``sid`` found here. Idnos with no study document are absent.
-    """
-    if not idnos:
-        return {}
-    found = client.search(
-        index=studies_index,
-        body={"size": len(idnos), "_source": ["sid", "idno"], "query": {"terms": {"idno": idnos}}},
-        ignore_unavailable=True,
-    )
-    return {hit["_source"]["idno"]: int(hit["_source"]["sid"]) for hit in found.get("hits", {}).get("hits", [])}

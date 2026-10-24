@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from opensearchpy.helpers import streaming_bulk
@@ -11,6 +12,7 @@ from nada_ai.ingest.pipeline import StudyExtract, ensure_index, ensure_studies_i
 from nada_ai.ingest.ports import IngestWriterPort
 from nada_ai.ingest.progress import CancelToken, IngestProgressTracker
 from nada_ai.ingest.quality import QualityReport
+from nada_ai.ingest.study_sources import StudySource
 from nada_ai.search.backend.opensearch.client import build_client
 from nada_ai.search.backend.opensearch.embeddings import EmbeddingService
 from nada_ai.search.backend.opensearch.index_template import (
@@ -193,7 +195,7 @@ class OpenSearchIngestWriter(IngestWriterPort):
 
     def run_bulk(
         self,
-        pairs: list[tuple[str, str]],
+        sources: Iterable[StudySource],
         *,
         force: bool = False,
         recreate_target: bool = False,
@@ -227,8 +229,7 @@ class OpenSearchIngestWriter(IngestWriterPort):
             actions = iter_bulk_actions(
                 self._settings,
                 _embedding,
-                pairs,
-                force=force,
+                sources,
                 show_progress_bar=show_progress_bar,
                 buffer_size=buffer_size,
                 quality_report=quality_report,

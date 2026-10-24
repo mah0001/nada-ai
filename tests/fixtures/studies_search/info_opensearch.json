@@ -7,7 +7,7 @@
     "semantic": true,
     "hybrid": true,
     "browse": true,
-    "facets": false,
+    "facets": true,
     "variables_search": true,
     "citations_search": true
   },
@@ -22,6 +22,11 @@
       "key": "countries",
       "type": "int_list",
       "description": "Country ids; any-of"
+    },
+    {
+      "key": "regions",
+      "type": "int_list",
+      "description": "Region ids (of the study's countries); any-of"
     },
     {
       "key": "year_from",
@@ -57,6 +62,16 @@
       "key": "tags",
       "type": "string_list",
       "description": "Study tags; any-of"
+    },
+    {
+      "key": "topics",
+      "type": "int_list",
+      "description": "Topic ids; any-of"
+    },
+    {
+      "key": "databases",
+      "type": "string_list",
+      "description": "Timeseries database idnos; any-of"
     },
     {
       "key": "facets",

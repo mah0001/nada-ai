@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     studies_semantic_min_score: float = Field(default=0.70, ge=0.0, le=1.0)
     #: Study search: keep semantic matches scoring at least this fraction of the best semantic match.
     studies_semantic_relative_cutoff: float = Field(default=0.94, ge=0.0, le=1.0)
+    #: Study search: the most values one facet lists (``facets`` in the request); ``more`` says when some were left out.
+    studies_facet_size: int = Field(default=500, ge=10, le=5_000)
 
     #: Variable search: rows reachable by offset paging (``offset + limit``); deeper pages use cursors (reported by
     #: ``GET /info`` as ``limits.variables_max_offset``). At most OpenSearch's default ``max_result_window``, and at
@@ -203,8 +205,8 @@ class Settings(BaseSettings):
     ack_failure_limit: int = Field(default=10, ge=1, le=1000)
 
     #: Report indexing/deletion outcomes back to NADA's search_index_state
-    #: (POST {base}/admin/search-index/state/bulk) after index_ids_op,
-    #: index_from_catalog_op, delete_by_idno_op, and delete_by_idnos_op —
+    #: (POST {base}/admin/search-index/state/bulk, by object_id) after index_sids_op,
+    #: index_from_catalog_op and delete_by_sids_op —
     #: independent of the queue/ack flow above, since bulk/admin-triggered
     #: operations never go through enqueue() and so have no queue row to ack
     #: against. Off by default, same rationale as reconcile_search_index_enabled:

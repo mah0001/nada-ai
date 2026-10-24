@@ -56,6 +56,11 @@ def modes_for(engine: Engine, settings: Settings) -> frozenset[str]:
     return modes
 
 
+def facets_for(engine: Engine, settings: Settings) -> bool:
+    """Whether the study search counts facets (``facets`` in the request): wherever OpenSearch serves it."""
+    return engine is Engine.opensearch and bool(modes_for(engine, settings))
+
+
 def capabilities_for(engine: Engine, settings: Settings) -> Capabilities:
     modes = modes_for(engine, settings)
     return Capabilities(
@@ -64,7 +69,7 @@ def capabilities_for(engine: Engine, settings: Settings) -> Capabilities:
         semantic="semantic" in modes,
         hybrid="hybrid" in modes,
         browse="browse" in modes,
-        facets=False,
+        facets=facets_for(engine, settings),
         # Lexical only, no modes of its own — advertised whenever the engine is OpenSearch, not gated by
         # ``modes_for`` (which is study-search specific). See docs/variables-search-contract.md.
         variables_search=engine is Engine.opensearch,

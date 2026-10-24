@@ -317,13 +317,6 @@ def test_semantic_and_hybrid_need_the_local_embedding_backend(monkeypatch: pytes
             assert error["details"] == {"capability": mode, "engine": "opensearch"}
 
 
-def test_facets_are_not_implemented(monkeypatch: pytest.MonkeyPatch) -> None:
-    with _running(monkeypatch, _os()) as client:
-        response = _post(client, {"include_facets": True})
-    assert response.status_code == 501
-    assert _error(response)[1]["details"]["capability"] == "facets"
-
-
 def test_debug_output_needs_the_admin_role(monkeypatch: pytest.MonkeyPatch) -> None:
     with _running(monkeypatch, _os()) as client:
         # with auth disabled every caller is admin, so debug is available...

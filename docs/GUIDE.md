@@ -349,16 +349,14 @@ flowchart LR
 5. Every document is passed through `ingest/quality.py::check_source_document` along
    the way — see [Ingest quality reports](#ingest-quality-reports).
 
-**Performance**: how expensive step 1 is depends on
-`AI4DATA_METADATA_CATALOG_EXTRACT_PATH`. Enabled (the `.env.example` default) —
-`get_metadata_ids` paginates NADA's bulk `search-metadata-extract/studies` endpoint
-once, warming the local metadata cache (including filters) for every idno on each
-page; the later per-idno `MetadataLoader` fetch is then a cache hit, not a second
-network call. Disabled — every idno gets its own `/api/catalog/json/{idno}` call, an
-N+1 pattern. The bulk endpoint is admin-only (requires
+**Studies are read by id.** Indexing never looks a study up by idno (NADA reuses an
+idno when a study is deleted and created again, and some idnos cannot travel in a URL).
+A study's full record is fetched from NADA's metadata-extract API by its internal id
+(`search-metadata-extract/studies?sids=`), or paged from the catalog in id order
+(`studies?offset=&limit=`), and handed to ai4data's handler as is: nothing is fetched
+or cached by idno (`ingest/study_sources.py`). The extract API is admin-only (requires
 `AI4DATA_METADATA_CATALOG_X_API_KEY`/`_AUTH_BEARER`/`_COOKIES` for an admin-capable
-account on the target instance); comment the setting out to fall back to the classic
-flow, which works against a public/anonymous-read catalog.
+account on the target instance) and `AI4DATA_METADATA_CATALOG_EXTRACT_PATH` must be set.
 
 ### Running ingestion
 
@@ -373,8 +371,7 @@ a thin loop over the single-type operation, not a new op of its own):
 uv run python -m nada_ai.ingest.cli create_index
 uv run python -m nada_ai.ingest.cli put_index_template   # OpenSearch only
 uv run python -m nada_ai.ingest.cli index_from_catalog    # pull + index ONE catalog_type (default: timeseries)
-uv run python -m nada_ai.ingest.cli index                 # index pre-fetched records
-uv run python -m nada_ai.ingest.cli index_ids --idnos idno1,idno2   # targeted re-index
+uv run python -m nada_ai.ingest.cli index --sids 516,517  # targeted re-index, by NADA internal id
 uv run python -m nada_ai.ingest.cli setup_ingest_pipeline  # OpenSearch ML Commons only
 ```
 
@@ -401,17 +398,19 @@ curl -X POST localhost:8020/admin/ingest/from-catalog \
 curl -X POST localhost:8020/admin/ingest/from-catalog/all \
   -H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY" -H 'content-type: application/json' -d '{}'
 
-# Targeted batch re-index by idno (role: write)
+# Targeted batch re-index by NADA internal id (role: write)
 curl -X POST localhost:8020/admin/catalog/index \
   -H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY" -H 'content-type: application/json' \
-  -d '{"idnos": ["idno1", "idno2"]}'
+  -d '{"sids": [516, 517]}'
 ```
 
 Jobs run through `JobRegistry` (`app/jobs.py`), which enforces single-flight semantics
 per job type and honors `NADA_MAX_CONCURRENT_INGEST_JOBS` (default `1`) — ingestion is
 CPU/memory-heavy (embedding compute), so concurrent full-catalog jobs are capped by
-default. A `POST /webhooks/catalog` endpoint accepts catalog lifecycle events and
-triggers targeted background reindex jobs, for push-based updates instead of polling.
+default. A `POST /webhooks/catalog` endpoint accepts catalog lifecycle events
+(`{"event", "sid"}`) and triggers targeted background reindex jobs, for push-based
+updates instead of polling. Every per-study route takes the NADA internal id:
+`/admin/catalog/{sid}/…`, `/admin/docs/{sid}`, `/admin/filters/{sid}`.
 
 ### Ingest quality reports
 

@@ -20,7 +20,7 @@ tuning, an eval harness), the deliberate scope decision here was:
   (`ingest/pipeline.py`, `ingest/opensearch_writer.py`): a variable document is a flat denormalization of one DB
   row, with no chunking and no embedding, so none of that applies. See `src/nada_ai/ingest/variables_index.py`.
 - **Variables stay in step with their study** (added after this contract first shipped). A full study index
-  (`index_ids_op`: the dashboard, a webhook, the CLI) syncs that idno's variables, since a full index is study +
+  (`index_sids_op`: the dashboard, a webhook, the CLI) syncs that study's variables, since a full index is study +
   chunks + variables together. So does a catalog-type run (`index_from_catalog_op`) — for its microdata rows only,
   one NADA call per microdata study (a run over thousands of documents makes none). NADA's own
   `change_class="variables"` signal (fired by `Dataset_microdata_model::index_variable_data()` after a DDI/
@@ -149,13 +149,13 @@ Same envelope, same codes, same auth guard and rate limiter as the study search 
 - **Backfill (the whole catalog):** `uv run python -m nada_ai.ingest.cli backfill_variables`. Pages NADA's
   `/api/admin/search-metadata-extract/variables` batch route; idempotent (`_id` is the variable's `uid`, so a
   re-run replaces rather than duplicates).
-- **One study:** `uv run python -m nada_ai.ingest.cli index_survey_variables --idno=<idno>`. Deletes then
-  re-indexes every variable of that study, from `/api/admin/search-metadata-extract/variables/<idno>`.
+- **One study:** `uv run python -m nada_ai.ingest.cli index_survey_variables --sid=<sid>`. Deletes then
+  re-indexes every variable of that study, from `/api/admin/search-metadata-extract/variables/<sid>?id_format=id`.
 - **Variables only, as a background job:** `POST /admin/variables/sync` (role `write`, OpenSearch only; 501 on Qdrant).
-  Body `{"idnos": [...]}` syncs those studies' variables; omit `idnos` to walk the whole catalog. An explicitly empty
+  Body `{"sids": [...]}` (NADA internal ids) syncs those studies' variables; omit `sids` to walk the whole catalog. An explicitly empty
   list is a 400 rather than "everything". Nothing else is touched: no study document, no chunks, no embedding. The job
   kind is `index_variables` and appears in `/jobs` with the usual progress and cancel; only one job per distinct
-  set of idnos runs at a time. NADA's dashboard starts it from the Variables card
+  set of studies runs at a time. NADA's dashboard starts it from the Variables card
   (`POST /api/admin/semantic/variables_sync`).
 - **Paging:** both NADA extract routes return variables a page at a time, keyset-paged on `uid`
   (`after_uid` in, `next_after_uid` and `has_more` out; `total` only on the first page). The page size is capped by
