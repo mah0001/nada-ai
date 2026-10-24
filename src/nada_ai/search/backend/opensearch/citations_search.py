@@ -38,6 +38,7 @@ class CitationSearchJob:
     offset: int
     sort_by: str  # "relevance", "title" or "year"
     order: str  # "asc" or "desc"; ignored for "relevance"
+    timeout_seconds: float = 5.0  # each OpenSearch request (setting search_timeout_seconds)
 
 
 @dataclass(frozen=True)
@@ -108,7 +109,7 @@ async def search_citations(job: CitationSearchJob) -> CitationPage:
     from opensearchpy.exceptions import NotFoundError
 
     try:
-        response = await job.client.search(index=job.index, body=search_body(job))
+        response = await job.client.search(index=job.index, body=search_body(job), request_timeout=job.timeout_seconds)
         hits = response["hits"]
         found = hits["total"]["value"] if isinstance(hits["total"], dict) else int(hits["total"])
         # Zero results is either "nothing matches" or "nothing is indexed" (e.g. a backfill that stopped before its

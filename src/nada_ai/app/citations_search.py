@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.exceptions import RequestValidationError
-from opensearchpy.exceptions import TransportError
+from opensearchpy.exceptions import ConnectionTimeout, TransportError
 
 from nada_ai.app.auth import Principal
 from nada_ai.app.citations_schemas import (
@@ -117,6 +117,7 @@ async def citations_search(
         offset=body.offset,
         sort_by=body.sort.value,
         order=body.order.value,
+        timeout_seconds=s.settings.search_timeout_seconds,
     )
     try:
         page = await search_citations(job)
@@ -125,6 +126,15 @@ async def citations_search(
             ErrorCode.index_not_ready,
             "The citation search index is empty or is being rebuilt",
             {"index": str(e)},
+        ) from e
+    except ConnectionTimeout as e:
+        logger.warning(
+            "POST /citations/search: no answer from OpenSearch within %ss", s.settings.search_timeout_seconds
+        )
+        raise StudiesApiError(
+            ErrorCode.search_timeout,
+            "The search took too long; try again, or narrow it with more words or filters",
+            {"timeout_seconds": s.settings.search_timeout_seconds},
         ) from e
     except TransportError as e:
         raise opensearch_error("POST /citations/search", e) from e

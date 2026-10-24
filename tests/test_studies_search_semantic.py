@@ -331,7 +331,7 @@ def _cluster(
     client = MagicMock()
     client.requests = []
 
-    async def search(index: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def search(index: str, body: dict[str, Any], **_: Any) -> dict[str, Any]:
         client.requests.append((index, body))
         if _is_idno_probe(body):  # checked first: it must never be answered by an unrelated configured response
             return idno if idno is not None else _lookup_response([])

@@ -143,3 +143,21 @@ def test_an_empty_index_is_index_not_ready(monkeypatch: pytest.MonkeyPatch) -> N
         response = c.post("/citations/search", json={"query": "poverty"})
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "index_not_ready"
+
+
+def test_a_search_that_takes_too_long_is_search_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opensearchpy.exceptions import ConnectionTimeout
+
+    client = _client(side_effect=ConnectionTimeout("TIMEOUT", "timed out", Exception("timed out")))
+    with _running(monkeypatch, "opensearch", client=client) as c:
+        response = c.post("/citations/search", json={"query": "poverty"})
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "search_timeout"
+
+
+def test_the_search_is_bounded_by_the_search_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NADA_SEARCH_TIMEOUT_SECONDS", "2.5")
+    client = _client()
+    with _running(monkeypatch, "opensearch", client=client) as c:
+        assert c.post("/citations/search", json={"query": "poverty"}).status_code == 200
+    assert client.search.call_args.kwargs["request_timeout"] == 2.5

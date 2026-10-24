@@ -205,6 +205,7 @@ All errors on these routes use one envelope and never the framework default:
 | `unknown_filter` | 422 | A filter key is not in the registry (`details.filters`, `details.supported`) |
 | `invalid_filter_value` | 422 | A filter value is malformed or out of range (`details.filter`) |
 | `offset_out_of_range` | 422 | `offset + limit` is beyond what the mode can page |
+| `search_timeout` | 504 | OpenSearch did not answer within `search_timeout_seconds` (setting, default 5): one slow query, not an outage |
 | `cursor_invalid` | 422 | A `cursor` that is not one of this browse (unreadable, edited, another sort): start again from the first page |
 | `unsupported_capability` | 501 | The active engine cannot do this (for example `studies_search` on Qdrant) |
 | `index_not_ready` | 503 | Index missing, empty or being rebuilt |

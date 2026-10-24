@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
-from opensearchpy.exceptions import TransportError
+from opensearchpy.exceptions import ConnectionTimeout, TransportError
 
 from nada_ai.app.auth import Principal
 from nada_ai.app.info import modes_for
@@ -263,6 +263,7 @@ async def _execute(
         policy=StudyPolicy.from_settings(s.settings),
         embed=_embedder(s),
         cursor=cursor,
+        timeout_seconds=s.settings.search_timeout_seconds,
     )
     if mode is not EffectiveMode.browse and job.query is not None:
         exact = await exact_idno_match(job)
@@ -321,6 +322,13 @@ async def studies_search(
             ErrorCode.index_not_ready,
             "The search index is empty or is being rebuilt",
             {"index": str(e)},
+        ) from e
+    except ConnectionTimeout as e:
+        logger.warning("POST /studies/search: no answer from OpenSearch within %ss", s.settings.search_timeout_seconds)
+        raise StudiesApiError(
+            ErrorCode.search_timeout,
+            "The search took too long; try again, or narrow it with more words or filters",
+            {"timeout_seconds": s.settings.search_timeout_seconds},
         ) from e
     except TransportError as e:
         raise opensearch_error("POST /studies/search", e) from e
