@@ -395,7 +395,9 @@ def test_search_index_diff_missing_list_returns_items(monkeypatch):
 
     monkeypatch.setattr(
         "nada_ai.ingest.search_index_sync.list_diff_missing",
-        lambda settings, **kw: DiffPage(items=[DiffItem(idno="A", type="survey", last_error="boom")], total=1382),
+        lambda settings, **kw: DiffPage(
+            items=[DiffItem(object_id=5, idno="A", type="survey", last_error="boom")], total=1382
+        ),
     )
 
     with TestClient(app) as client:
@@ -404,7 +406,7 @@ def test_search_index_diff_missing_list_returns_items(monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["total"] == 1382
-    assert body["items"] == [{"idno": "A", "type": "survey", "last_error": "boom"}]
+    assert body["items"] == [{"object_id": 5, "idno": "A", "type": "survey", "last_error": "boom"}]
 
 
 def test_search_index_diff_missing_list_passes_has_error_through(monkeypatch):
@@ -427,7 +429,7 @@ def test_search_index_diff_stale_list_returns_items(monkeypatch):
 
     monkeypatch.setattr(
         "nada_ai.ingest.search_index_sync.list_diff_stale",
-        lambda settings, **kw: DiffPage(items=[DiffItem(idno="Z", type=None)], total=1),
+        lambda settings, **kw: DiffPage(items=[DiffItem(object_id=9, idno="Z", type=None)], total=1),
     )
 
     with TestClient(app) as client:
@@ -436,7 +438,7 @@ def test_search_index_diff_stale_list_returns_items(monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["total"] == 1
-    assert body["items"] == [{"idno": "Z", "type": None, "last_error": None}]
+    assert body["items"] == [{"object_id": 9, "idno": "Z", "type": None, "last_error": None}]
 
 
 def test_search_index_diff_missing_list_400_when_not_configured(monkeypatch):
@@ -460,7 +462,7 @@ def test_search_index_diff_summary_returns_counts(monkeypatch):
 
     monkeypatch.setattr(
         "nada_ai.ingest.search_index_sync.list_diff_missing",
-        lambda settings, **kw: DiffPage(items=[DiffItem(idno="A", type="survey")], total=7),
+        lambda settings, **kw: DiffPage(items=[DiffItem(object_id=5, idno="A", type="survey")], total=7),
     )
     monkeypatch.setattr(
         "nada_ai.ingest.search_index_sync.list_diff_stale",
@@ -983,10 +985,10 @@ def _post_variables_sync(monkeypatch, body, *, backend="opensearch", seen=None):
 
     monkeypatch.setenv("NADA_ADMIN_AUTH_DISABLED", "true")
 
-    def fake(settings, idnos, *, progress_cb=None, cancel_token=None):
+    def fake(settings, sids, *, progress_cb=None, cancel_token=None):
         if seen is not None:
-            seen.append(idnos)
-        return {"scope": "all" if idnos is None else "idnos", "indexed": 0, "errors": [], "error_count": 0}
+            seen.append(sids)
+        return {"scope": "all" if sids is None else "sids", "indexed": 0, "errors": [], "error_count": 0}
 
     monkeypatch.setattr(admin_module, "sync_variables_op", fake)
     with TestClient(app) as client:
@@ -1005,21 +1007,25 @@ def test_variables_sync_submits_a_background_job_for_the_whole_catalog(monkeypat
     assert r.status_code == 202
     job = r.json()
     assert job["kind"] == "index_variables" and job["key"] == "index_variables:all"
-    assert job["params"] == {"idnos": None}
+    assert job["params"] == {"sids": None}
 
 
-def test_variables_sync_submits_one_job_per_distinct_set_of_idnos(monkeypatch):
-    r = _post_variables_sync(monkeypatch, {"idnos": [" B ", "A", "A"]})
+def test_variables_sync_submits_one_job_per_distinct_set_of_sids(monkeypatch):
+    r = _post_variables_sync(monkeypatch, {"sids": [7, 3, 3]})
     assert r.status_code == 202
     job = r.json()
-    assert job["params"] == {"idnos": ["B", "A"]}  # trimmed and deduplicated, order kept
+    assert job["params"] == {"sids": [7, 3]}  # deduplicated, order kept
     assert job["key"].startswith("index_variables:") and job["key"] != "index_variables:all"
 
 
-def test_variables_sync_rejects_an_empty_idno_list_rather_than_meaning_everything(monkeypatch):
-    r = _post_variables_sync(monkeypatch, {"idnos": ["", "  "]})
+def test_variables_sync_rejects_an_empty_sid_list_rather_than_meaning_everything(monkeypatch):
+    r = _post_variables_sync(monkeypatch, {"sids": []})
     assert r.status_code == 400
     assert "omit it" in r.json()["detail"]
+
+
+def test_variables_sync_rejects_an_idno_list(monkeypatch):
+    assert _post_variables_sync(monkeypatch, {"sids": ["WB_X"]}).status_code == 422
 
 
 def test_variables_sync_is_501_on_qdrant(monkeypatch):
@@ -1335,7 +1341,7 @@ def test_admin_doc_get_passes_through(monkeypatch):
         return_value={
             "hits": {
                 "hits": [
-                    {"_id": "abc", "_score": 1.0, "_source": {"idno": "WB_X"}},
+                    {"_id": "abc", "_score": 1.0, "_source": {"metadata": {"sid": 516}}},
                 ]
             }
         }
@@ -1347,13 +1353,14 @@ def test_admin_doc_get_passes_through(monkeypatch):
         state.client = fake
         state.search = create_search_backend(state.settings, fake)
         try:
-            r = client.get("/admin/docs/WB_X")
+            r = client.get("/admin/docs/516")
         finally:
             state.client = prev_client
             state.search = prev_search
     assert r.status_code == 200
+    assert fake.search.await_args.kwargs["body"]["query"] == {"term": {"metadata.sid": 516}}
     body = r.json()
-    assert body["idno"] == "WB_X"
+    assert body["sid"] == 516
     assert body["count"] == 1
     assert body["hits"][0]["_id"] == "abc"
 
@@ -1372,29 +1379,30 @@ def _get_qdrant_docs(monkeypatch, scroll: AsyncMock):
         state.search = backend
         collection = state.settings.qdrant_collection
         try:
-            return client.get("/admin/docs/WB_X"), collection
+            return client.get("/admin/docs/516"), collection
         finally:
             state.settings, state.search = prev_settings, prev_search
 
 
-def test_admin_docs_get_scrolls_the_qdrant_collection_by_idno(monkeypatch):
+def test_admin_docs_get_scrolls_the_qdrant_collection_by_sid(monkeypatch):
     from qdrant_client.http import models as qm
 
-    point = qm.Record(id="p-1", payload={"metadata": {"idno": "WB_X"}, "page_content": "text"})
+    point = qm.Record(id="p-1", payload={"metadata": {"sid": 516}, "page_content": "text"})
     scroll = AsyncMock(return_value=([point], None))
     r, collection = _get_qdrant_docs(monkeypatch, scroll)
 
     assert r.status_code == 200
     assert r.json() == {
         "index": collection,
-        "idno": "WB_X",
+        "sid": 516,
         "count": 1,
-        "hits": [{"_id": "p-1", "_score": None, "_source": {"metadata": {"idno": "WB_X"}, "page_content": "text"}}],
+        "hits": [{"_id": "p-1", "_score": None, "_source": {"metadata": {"sid": 516}, "page_content": "text"}}],
     }
     kwargs = scroll.await_args.kwargs
     assert kwargs["collection_name"] == collection
     assert kwargs["with_vectors"] is False
-    assert kwargs["scroll_filter"].must[0].match.value == "WB_X"
+    assert kwargs["scroll_filter"].must[0].key == "metadata.sid"
+    assert kwargs["scroll_filter"].must[0].match.value == 516
 
 
 def test_admin_docs_get_is_404_when_the_qdrant_collection_is_missing(monkeypatch):
@@ -1407,21 +1415,21 @@ def test_admin_docs_get_is_404_when_the_qdrant_collection_is_missing(monkeypatch
 
 
 def _delete_docs(monkeypatch, backend: str, op_result: dict):
-    """DELETE /admin/docs/{idno} with delete_by_idno_op stubbed; returns the response and the op's calls."""
+    """DELETE /admin/docs/{sid} with delete_by_sids_op stubbed; returns the response and the op's calls."""
     monkeypatch.setenv("NADA_ADMIN_AUTH_DISABLED", "true")
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, list[int]]] = []
 
-    def op(settings, idno):
-        calls.append((settings.search_backend, idno))
+    def op(settings, sids):
+        calls.append((settings.search_backend, sids))
         return op_result
 
-    monkeypatch.setattr(admin_module, "delete_by_idno_op", op)
+    monkeypatch.setattr(admin_module, "delete_by_sids_op", op)
     with TestClient(app) as client:
         _fresh_state()
         prev_settings = state.settings
         state.settings = Settings(search_backend=backend)
         try:
-            return client.delete("/admin/docs/WB_X"), calls
+            return client.delete("/admin/docs/516"), calls
         finally:
             state.settings = prev_settings
 
@@ -1430,7 +1438,7 @@ def test_admin_docs_delete_removes_the_whole_study_on_opensearch(monkeypatch):
     result = {
         "backend": "opensearch",
         "index": "chunks",
-        "idno": "WB_X",
+        "sids": [516],
         "deleted": 4,
         "total": 4,
         "studies_index": "chunks-studies",
@@ -1440,16 +1448,16 @@ def test_admin_docs_delete_removes_the_whole_study_on_opensearch(monkeypatch):
     }
     r, calls = _delete_docs(monkeypatch, "opensearch", result)
 
-    assert calls == [("opensearch", "WB_X")]
+    assert calls == [("opensearch", [516])]
     assert r.status_code == 200
     assert r.json() == {"index": "chunks", "deleted": 4, "matched": 4, "raw": result}
 
 
 def test_admin_docs_delete_works_under_qdrant(monkeypatch):
-    result = {"backend": "qdrant", "collection": "nada", "idno": "WB_X", "operation": "completed"}
+    result = {"backend": "qdrant", "collection": "nada", "sids": [516], "operation": "completed"}
     r, calls = _delete_docs(monkeypatch, "qdrant", result)
 
-    assert calls == [("qdrant", "WB_X")]
+    assert calls == [("qdrant", [516])]
     assert r.status_code == 200
     assert r.json() == {"index": "nada", "deleted": None, "matched": None, "raw": result}
 
@@ -1492,38 +1500,31 @@ def test_cancel_running_job_via_endpoint(monkeypatch):
         assert s["status"] in {"cancelled", "succeeded", "failed"}
 
 
-def test_webhook_and_admin_index_dedupe_same_idno(monkeypatch):
-    """Regression test: /admin/catalog/{idno}/index and the created/updated
-    webhook used to submit under different job-registry keys (index:... vs
-    reindex:...) for the exact same (metadata_type, idno) write, so they could
-    run concurrently with zero coordination. They now share
-    content_sync_job_key() and must single-flight against each other."""
+def test_webhook_and_admin_index_dedupe_same_study(monkeypatch):
+    """Regression test: /admin/catalog/{sid}/index and the created/updated
+    webhook used to submit under different job-registry keys for the exact
+    same write, so they could run concurrently with zero coordination. They
+    now share content_sync_job_key() and must single-flight against each other."""
     import nada_ai.app.catalog_admin as catalog_admin_module
     import nada_ai.app.webhooks as webhooks_module
 
     monkeypatch.setenv("NADA_ADMIN_AUTH_DISABLED", "true")
     gate = threading.Event()
 
-    def slow_index(settings, idnos, metadata_type, force, embedding=None):
+    def slow_index(settings, sids, force, embedding=None):
         gate.wait(timeout=5)
         return {"indexed": 1, "errors": []}
 
-    monkeypatch.setattr(catalog_admin_module, "index_ids_op", slow_index)
-    monkeypatch.setattr(webhooks_module, "index_ids_op", slow_index)
-    monkeypatch.setattr(webhooks_module, "delete_by_idno_op", lambda settings, idno: {"deleted": 0})
+    monkeypatch.setattr(catalog_admin_module, "index_sids_op", slow_index)
+    monkeypatch.setattr(webhooks_module, "index_sids_op", slow_index)
+    monkeypatch.setattr(webhooks_module, "delete_by_sids_op", lambda settings, sids: {"deleted": 0})
 
     with TestClient(app) as client:
         _fresh_state()
-        r1 = client.post(
-            "/admin/catalog/SAME_IDNO/index",
-            json={"metadata_type": "indicator", "force": False},
-        )
+        r1 = client.post("/admin/catalog/516/index", json={"force": False})
         assert r1.status_code == 202
 
-        r2 = client.post(
-            "/webhooks/catalog",
-            json={"event": "updated", "idno": "SAME_IDNO", "metadata_type": "indicator"},
-        )
+        r2 = client.post("/webhooks/catalog", json={"event": "updated", "sid": 516})
         assert r2.status_code == 409
         body = r2.json()
         assert body["job"]["id"] == r1.json()["id"]

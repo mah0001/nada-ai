@@ -537,13 +537,10 @@ docker logs nada-ai-api-qdrant-dev 2>&1 | tail -100
 docker logs nada-ai-qdrant-dev 2>&1 | tail -50
 ```
 
-**Re-ingest one idno**
+**Re-ingest one study** (by its NADA internal id; its type comes from its record)
 
 ```bash
-uv run python -m nada_ai.ingest.cli index \
-  --idnos=RWA_NISR_DOC_2025_CPI-MR_MAY_FR_V1 \
-  --metadata_type=document \
-  --force=True
+uv run python -m nada_ai.ingest.cli index --sids=516 --force=True
 ```
 
 ---

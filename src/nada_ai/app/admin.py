@@ -18,9 +18,9 @@ import functools
 import hashlib
 import logging
 import uuid
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from fastapi.responses import JSONResponse
 from opensearchpy.exceptions import NotFoundError, RequestError
 
@@ -59,7 +59,7 @@ from nada_ai.ingest.progress import CancelToken
 from nada_ai.ingest.search_index_sync import SearchIndexStatus
 from nada_ai.ingest.service import (
     create_index_op,
-    delete_by_idno_op,
+    delete_by_sids_op,
     index_from_catalog_op,
     put_index_template_op,
     recreate_citations_op,
@@ -92,6 +92,9 @@ def _require_engine(s: AppState, expected: str) -> None:
 
 
 admin_router = APIRouter(tags=["admin"])
+
+#: A study, by its NADA internal id (``surveys.id``).
+Sid = Annotated[int, Path(ge=1, description="NADA internal study id")]
 jobs_router = APIRouter(tags=["jobs"])
 
 
@@ -103,8 +106,9 @@ def _job_envelope(job: Job) -> dict[str, Any]:
     return job.to_dict()
 
 
-def _idnos_key(idnos: list[str]) -> str:
-    canonical = ",".join(sorted({i.strip() for i in idnos if i.strip()}))
+def _ids_key(ids: list[Any]) -> str:
+    """A short job-registry key for a set of ids (order and repeats ignored)."""
+    canonical = ",".join(sorted({str(i).strip() for i in ids if str(i).strip()}))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
@@ -471,15 +475,15 @@ async def admin_variables_sync(
 
     Unlike a full study index this does not touch the study document or its chunks, so it never embeds anything: it
     is the way to bring the variable index up to date, or refill it after a recreate, without re-indexing studies.
-    ``idnos`` replaces those studies' variables; omitted, it walks the whole catalog's variables.
+    ``sids`` replaces those studies' variables; omitted, it walks the whole catalog's variables.
     """
     _require_engine(s, "opensearch")
     settings = s.settings
-    idnos: list[str] | None = None
-    if body.idnos is not None:
-        idnos = list(dict.fromkeys(i.strip() for i in body.idnos if i.strip()))
-        if not idnos:
-            raise HTTPException(status_code=400, detail="idnos must not be empty; omit it to index every study")
+    sids: list[int] | None = None
+    if body.sids is not None:
+        sids = list(dict.fromkeys(body.sids))
+        if not sids:
+            raise HTTPException(status_code=400, detail="sids must not be empty; omit it to index every study")
 
     job_id = uuid.uuid4().hex
     cancel_token = CancelToken()
@@ -488,7 +492,7 @@ async def admin_variables_sync(
         return await asyncio.to_thread(
             sync_variables_op,
             settings,
-            idnos,
+            sids,
             progress_cb=functools.partial(s.jobs.set_progress, job_id),
             cancel_token=cancel_token,
         )
@@ -496,9 +500,9 @@ async def admin_variables_sync(
     return await _submit_or_409(
         s,
         kind="index_variables",
-        key="index_variables:all" if idnos is None else f"index_variables:{_idnos_key(idnos)}",
+        key="index_variables:all" if sids is None else f"index_variables:{_ids_key(sids)}",
         factory=factory,
-        params={"idnos": idnos},
+        params={"sids": sids},
         principal=principal,
         job_id=job_id,
         cancel_token=cancel_token,
@@ -539,7 +543,7 @@ async def admin_citations_sync(
     return await _submit_or_409(
         s,
         kind="index_citations",
-        key="index_citations:all" if ids is None else f"index_citations:{_idnos_key([str(i) for i in ids])}",
+        key="index_citations:all" if ids is None else f"index_citations:{_ids_key([str(i) for i in ids])}",
         factory=factory,
         params={"ids": ids},
         principal=principal,
@@ -857,7 +861,7 @@ async def admin_citations_index_recreate(
     )
 
 
-async def _qdrant_docs(s: AppState, idno: str) -> dict[str, Any]:
+async def _qdrant_docs(s: AppState, sid: int) -> dict[str, Any]:
     from qdrant_client.http import models as qm
     from qdrant_client.http.exceptions import UnexpectedResponse
 
@@ -865,79 +869,79 @@ async def _qdrant_docs(s: AppState, idno: str) -> dict[str, Any]:
     if client is None:
         raise HTTPException(status_code=503, detail="Qdrant search backend has no client")
     coll = s.settings.qdrant_collection
-    idno_filter = qm.Filter(must=[qm.FieldCondition(key=metadata_field("idno"), match=qm.MatchValue(value=idno))])
+    sid_filter = qm.Filter(must=[qm.FieldCondition(key=metadata_field("sid"), match=qm.MatchValue(value=sid))])
     try:
         points, _ = await client.scroll(
-            collection_name=coll, scroll_filter=idno_filter, limit=50, with_payload=True, with_vectors=False
+            collection_name=coll, scroll_filter=sid_filter, limit=50, with_payload=True, with_vectors=False
         )
     except UnexpectedResponse as e:
         if e.status_code == 404:
             raise HTTPException(status_code=404, detail=f"collection {coll} not found") from e
-        logger.error("qdrant scroll failed for %s: %s", idno, e)
+        logger.error("qdrant scroll failed for study %s: %s", sid, e)
         raise HTTPException(status_code=503, detail="backend unavailable") from e
     except Exception as e:
-        logger.error("qdrant scroll failed for %s: %s", idno, e)
+        logger.error("qdrant scroll failed for study %s: %s", sid, e)
         raise HTTPException(status_code=503, detail="backend unavailable") from e
     return {
         "index": coll,
-        "idno": idno,
+        "sid": sid,
         "count": len(points),
         "hits": [{"_id": str(p.id), "_score": None, "_source": p.payload or {}} for p in points],
     }
 
 
-@admin_router.get("/admin/docs/{idno}", dependencies=[Depends(require_role(Role.read))])
-async def admin_doc_get(idno: str, s: AppState = Depends(get_state)) -> dict[str, Any]:
-    """The stored documents (OpenSearch) or points (Qdrant) of one idno, at most 50, in the same shape."""
+@admin_router.get("/admin/docs/{sid}", dependencies=[Depends(require_role(Role.read))])
+async def admin_doc_get(sid: Sid, s: AppState = Depends(get_state)) -> dict[str, Any]:
+    """The stored documents (OpenSearch) or points (Qdrant) of one study, at most 50, in the same shape."""
     if s.settings.search_backend == "qdrant":
-        return await _qdrant_docs(s, idno)
+        return await _qdrant_docs(s, sid)
     name = s.settings.index_name
     body = {
         "size": 50,
-        "query": {"term": {metadata_field("idno"): idno}},
+        "query": {"term": {metadata_field("sid"): sid}},
     }
     try:
         resp = await s.client.search(index=name, body=body)
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=f"index {name} not found") from e
     except Exception as e:
-        logger.error("doc search failed for %s: %s", idno, e)
+        logger.error("doc search failed for study %s: %s", sid, e)
         raise HTTPException(status_code=503, detail="backend unavailable") from e
     hits = resp.get("hits", {}).get("hits", []) or []
     return {
         "index": name,
-        "idno": idno,
+        "sid": sid,
         "count": len(hits),
         "hits": [{"_id": h.get("_id"), "_score": h.get("_score"), "_source": h.get("_source", {})} for h in hits],
     }
 
 
 @admin_router.delete(
-    "/admin/docs/{idno}",
+    "/admin/docs/{sid}",
     response_model=DeleteDocsResponse,
 )
 async def admin_doc_delete(
-    idno: str,
+    sid: Sid,
     s: AppState = Depends(get_state),
     principal: Principal = Depends(require_role(Role.write)),
 ) -> DeleteDocsResponse:
-    """Delete one study from the search store of the configured backend (``delete_by_idno_op``): on OpenSearch its
+    """Delete one study from the search store of the configured backend (``delete_by_sids_op``): on OpenSearch its
     chunks, its study document and its variables; on Qdrant its points. ``deleted`` counts chunks (OpenSearch only)."""
     from qdrant_client.http.exceptions import UnexpectedResponse
 
     try:
-        result = await asyncio.to_thread(delete_by_idno_op, s.settings, idno)
+        result = await asyncio.to_thread(delete_by_sids_op, s.settings, [sid])
     except UnexpectedResponse as e:
         if e.status_code == 404:
             raise HTTPException(status_code=404, detail=f"collection {s.settings.qdrant_collection} not found") from e
-        logger.error("delete failed for %s: %s", idno, e)
-        await audit_log(s, principal, action="docs.delete", target=idno, status="error", detail=str(e))
+        logger.error("delete failed for study %s: %s", sid, e)
+        await audit_log(s, principal, action="docs.delete", target=str(sid), status="error", detail=str(e))
         raise HTTPException(status_code=503, detail="backend unavailable") from e
     except Exception as e:
-        logger.error("delete failed for %s: %s", idno, e)
-        await audit_log(s, principal, action="docs.delete", target=idno, status="error", detail=str(e))
+        logger.error("delete failed for study %s: %s", sid, e)
+        await audit_log(s, principal, action="docs.delete", target=str(sid), status="error", detail=str(e))
         raise HTTPException(status_code=503, detail="backend unavailable") from e
-    await audit_log(s, principal, action="docs.delete", target=idno, status="ok")
+    await audit_log(s, principal, action="docs.delete", target=str(sid), status="ok")
     total = result.get("total")
     return DeleteDocsResponse(
         index=result.get("collection") or result.get("index") or s.settings.index_name,
@@ -1119,14 +1123,12 @@ async def admin_filters_sync(
     s: AppState = Depends(get_state),
     principal: Principal = Depends(require_role(Role.write)),
 ) -> JSONResponse:
-    records = [{"idno": r.idno.strip(), "filters": r.filters} for r in body.records if r.idno.strip()]
-    if not records:
-        raise HTTPException(status_code=400, detail="records must contain at least one non-empty idno")
+    records = [{"sid": r.sid, "filters": r.filters} for r in body.records]
 
     async def factory() -> dict[str, Any]:
         return await asyncio.to_thread(sync_filters_op, s.settings, records)
 
-    key = f"filters_sync:{_idnos_key([r['idno'] for r in records])}"
+    key = f"filters_sync:{_ids_key([r['sid'] for r in records])}"
     return await _submit_or_409(
         s,
         kind="filters_sync",
@@ -1146,12 +1148,12 @@ async def admin_filters_ensure_indexes(s: AppState = Depends(get_state)) -> dict
 
 
 @admin_router.get(
-    "/admin/filters/{idno}",
+    "/admin/filters/{sid}",
     dependencies=[Depends(require_role(Role.read))],
     response_model=GetFiltersResponse,
 )
-async def admin_filters_get(idno: str, s: AppState = Depends(get_state)) -> GetFiltersResponse:
-    out = await asyncio.to_thread(get_filters_op, s.settings, idno)
+async def admin_filters_get(sid: Sid, s: AppState = Depends(get_state)) -> GetFiltersResponse:
+    out = await asyncio.to_thread(get_filters_op, s.settings, sid)
     return GetFiltersResponse(**out)
 
 
@@ -1501,6 +1503,6 @@ __all__ = [
     "admin_router",
     "ADMIN_API_KEY_ENV",
     "jobs_router",
-    "_idnos_key",
+    "_ids_key",
     "_submit_or_409",
 ]

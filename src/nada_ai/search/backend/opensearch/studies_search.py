@@ -13,6 +13,9 @@ mode is advertised exactly when its executor exists.
 The study index (one document per study) is the source of truth for what a study is: its NADA idno, its type, the
 counts. Filters are the flat ``filter_facets.<key>`` fields written at ingest on both indexes (see
 ``mapping.filter_facets_mapping``).
+
+Facet counts (``facets`` in the request) come from one more request on the study index, run next to the page request:
+see :func:`facets_body` and ``docs/studies-search-facets.md``.
 """
 
 from __future__ import annotations
@@ -29,9 +32,15 @@ from opensearchpy.exceptions import NotFoundError
 
 from nada_ai.app.studies_schemas import (
     EffectiveMode,
+    FacetBucket,
+    FacetKey,
+    FacetRequest,
+    FacetValues,
     SortField,
     SortOrder,
+    StudyFacets,
     StudyFilters,
+    YearRange,
 )
 from nada_ai.search.backend.opensearch.mapping import FILTER_FACETS_KEY, METADATA_OBJECT_KEY, STUDY_ALL_TEXT_FIELD
 from nada_ai.search.backend.opensearch.studies_semantic import (
@@ -87,38 +96,42 @@ CHUNK_FIELDS = FieldMap(
 )
 
 
-def filter_clauses(filters: StudyFilters, fields: FieldMap = STUDY_FIELDS) -> list[dict[str, Any]]:
-    """``bool.filter`` clauses for every filter except ``types`` (see :func:`types_post_filter`).
+#: Facet key -> the ``filter_facets`` field it counts (and its filter matches).
+FACET_FIELDS: dict[FacetKey, str] = {
+    FacetKey.countries: "countries",
+    FacetKey.regions: "regions",
+    FacetKey.collections: "repositories",
+    FacetKey.form_ids: "formid",
+    FacetKey.data_class_ids: "data_class_id",
+    FacetKey.tags: "tags",
+    FacetKey.databases: "ts_databases",
+    FacetKey.years: "years",
+}
 
-    Filters combine with AND; values within one key are any-of. Only published studies are ever searched.
-    ``fields`` says where the fields live, so the same filters serve the study index and the chunk index.
-    """
+#: Facet key -> the ``StudyFilters`` field that selects its values (``years`` is a range, not a selection).
+_FACET_SELECTION: dict[FacetKey, str] = {
+    FacetKey.countries: "countries",
+    FacetKey.regions: "regions",
+    FacetKey.collections: "collections",
+    FacetKey.form_ids: "form_ids",
+    FacetKey.data_class_ids: "data_class_ids",
+    FacetKey.tags: "tags",
+    FacetKey.databases: "databases",
+}
 
-    def facet(key: str) -> str:
-        return f"{fields.facets}.{key}"
 
-    clauses: list[dict[str, Any]] = [{"term": {facet("published"): 1}}]
-    if filters.countries:
-        clauses.append({"terms": {facet("countries"): filters.countries}})
-    if filters.year_from is not None or filters.year_to is not None:
-        bounds = {
-            bound: value for bound, value in (("gte", filters.year_from), ("lte", filters.year_to)) if value is not None
-        }
-        clauses.append({"range": {facet("years"): bounds}})
+def user_facet_field(name: str) -> str:
+    """The ``filter_facets`` field of user-defined facet ``name`` (its term ids)."""
+    return f"fq_{name}"
+
+
+def scope_clauses(filters: StudyFilters, fields: FieldMap = STUDY_FIELDS) -> list[dict[str, Any]]:
+    """The constraints no facet ignores: published, the active repository, ``sids`` and the created range."""
+    clauses: list[dict[str, Any]] = [{"term": {f"{fields.facets}.published": 1}}]
     # repository (the active scope) and collections (the facet) are separate constraints, both against the
     # primary-or-secondary membership list
     if filters.repository:
-        clauses.append({"term": {facet("repositories"): filters.repository}})
-    if filters.collections:
-        clauses.append({"terms": {facet("repositories"): filters.collections}})
-    if filters.form_ids:
-        clauses.append({"terms": {facet("formid"): filters.form_ids}})
-    if filters.data_class_ids:
-        clauses.append({"terms": {facet("data_class_id"): filters.data_class_ids}})
-    if filters.tags:
-        clauses.append({"terms": {facet("tags"): filters.tags}})
-    for name, term_ids in (filters.facets or {}).items():
-        clauses.append({"terms": {facet(f"fq_{name}"): term_ids}})
+        clauses.append({"term": {f"{fields.facets}.repositories": filters.repository}})
     if filters.sids:
         clauses.append({"terms": {fields.sid: filters.sids}})
     if filters.created_from is not None or filters.created_to is not None:
@@ -131,13 +144,133 @@ def filter_clauses(filters: StudyFilters, fields: FieldMap = STUDY_FIELDS) -> li
     return clauses
 
 
+def facet_clauses(filters: StudyFilters, fields: FieldMap = STUDY_FIELDS) -> dict[str, dict[str, Any]]:
+    """The filters a facet can ignore, by the facet that ignores it: a :class:`FacetKey` value, ``fq_<name>`` for a
+    user facet, or ``topics`` (no facet counts it, so it always applies)."""
+
+    def facet(key: str) -> str:
+        return f"{fields.facets}.{key}"
+
+    clauses: dict[str, dict[str, Any]] = {}
+    for key, attr in _FACET_SELECTION.items():
+        if values := getattr(filters, attr):
+            clauses[key.value] = {"terms": {facet(FACET_FIELDS[key]): values}}
+    if filters.year_from is not None or filters.year_to is not None:
+        bounds = {
+            bound: value for bound, value in (("gte", filters.year_from), ("lte", filters.year_to)) if value is not None
+        }
+        clauses[FacetKey.years.value] = {"range": {facet(FACET_FIELDS[FacetKey.years]): bounds}}
+    if filters.topics:
+        clauses["topics"] = {"terms": {facet("topics"): filters.topics}}
+    for name, term_ids in (filters.facets or {}).items():
+        clauses[user_facet_field(name)] = {"terms": {facet(user_facet_field(name)): term_ids}}
+    return clauses
+
+
+def filter_clauses(filters: StudyFilters, fields: FieldMap = STUDY_FIELDS) -> list[dict[str, Any]]:
+    """``bool.filter`` clauses for every filter except ``types`` (see :func:`types_post_filter`).
+
+    Filters combine with AND; values within one key are any-of. Only published studies are ever searched.
+    ``fields`` says where the fields live, so the same filters serve the study index and the chunk index.
+    """
+    return [*scope_clauses(filters, fields), *facet_clauses(filters, fields).values()]
+
+
+def _types_clause(filters: StudyFilters) -> dict[str, Any] | None:
+    return {"terms": {f"{FILTER_FACETS_KEY}.dataset_type": filters.types}} if filters.types else None
+
+
 def types_post_filter(filters: StudyFilters) -> dict[str, Any] | None:
     """The ``types`` filter, applied as a ``post_filter`` so the per-type counts (tabs) ignore it.
 
     A post filter narrows the hits and ``hits.total`` but not the aggregations, which is exactly the contract:
     ``found`` honors ``types``; ``search_counts_by_type`` does not.
     """
-    return {"terms": {f"{FILTER_FACETS_KEY}.dataset_type": filters.types}} if filters.types else None
+    return _types_clause(filters)
+
+
+# ---------------------------------------------------------------------------------------
+# Facets
+# ---------------------------------------------------------------------------------------
+
+
+def _facet_aggregation(
+    field: str, others: list[dict[str, Any]], selected: list[Any] | None, size: int
+) -> dict[str, Any]:
+    """The counts of one facet: its values under every other filter, and the selected values (always listed)."""
+    aggs: dict[str, Any] = {
+        "values": {"terms": {"field": field, "size": size, "order": [{"_count": "desc"}, {"_key": "asc"}]}}
+    }
+    if selected:
+        aggs["selected"] = {"filters": {"filters": {str(v): {"term": {field: v}} for v in selected}}}
+    return {"filter": {"bool": {"filter": others}}, "aggs": aggs}
+
+
+def facets_body(
+    match: dict[str, Any] | None, filters: StudyFilters, request: FacetRequest, size: int
+) -> dict[str, Any]:
+    """The facet counts of a search, as one ``size: 0`` request on the study index.
+
+    ``match`` selects the search's result set before the facet filters (``None`` in a browse). The scope (published,
+    repository, ``sids``, created) and ``match`` are the query; each facet's aggregation applies the tab (``types``) and
+    every facet filter except its own, so a facet lists the values a user can add to the selection.
+    """
+    by_key = facet_clauses(filters)
+    types = _types_clause(filters)
+
+    def others(own: str) -> list[dict[str, Any]]:
+        clauses = [clause for key, clause in by_key.items() if key != own]
+        return clauses + [types] if types is not None else clauses
+
+    def field(name: str) -> str:
+        return f"{FILTER_FACETS_KEY}.{name}"
+
+    aggs: dict[str, Any] = {}
+    for key in request.keys:
+        if key is FacetKey.years:
+            years = field(FACET_FIELDS[key])
+            aggs[f"f_{key.value}"] = {
+                "filter": {"bool": {"filter": others(key.value)}},
+                "aggs": {"min": {"min": {"field": years}}, "max": {"max": {"field": years}}},
+            }
+            continue
+        selected = getattr(filters, _FACET_SELECTION[key])
+        aggs[f"f_{key.value}"] = _facet_aggregation(field(FACET_FIELDS[key]), others(key.value), selected, size)
+    for name in request.user:
+        own = user_facet_field(name)
+        selected = (filters.facets or {}).get(name)
+        aggs[f"u_{name}"] = _facet_aggregation(field(own), others(own), selected, size)
+
+    query_filter = scope_clauses(filters)
+    if match is not None:
+        query_filter.append(match)
+    return {"size": 0, "track_total_hits": False, "query": {"bool": {"filter": query_filter}}, "aggs": aggs}
+
+
+def _facet_values(agg: dict[str, Any]) -> FacetValues:
+    values = agg["values"]
+    buckets = [FacetBucket(value=str(b["key"]), count=int(b["doc_count"])) for b in values["buckets"]]
+    listed = {b.value for b in buckets}
+    # a selected value beyond the first ``size`` is added; one that matches nothing is not listed
+    for value, bucket in (agg.get("selected") or {}).get("buckets", {}).items():
+        if value not in listed and int(bucket["doc_count"]) > 0:
+            buckets.append(FacetBucket(value=value, count=int(bucket["doc_count"])))
+    return FacetValues(buckets=buckets, more=int(values.get("sum_other_doc_count") or 0) > 0)
+
+
+def parse_facets(response: dict[str, Any], request: FacetRequest) -> StudyFacets:
+    aggs = response["aggregations"]
+    facets = StudyFacets()
+    for key in request.keys:
+        agg = aggs[f"f_{key.value}"]
+        if key is FacetKey.years:
+            low, high = agg["min"]["value"], agg["max"]["value"]
+            facets.years = YearRange(min=None if low is None else int(low), max=None if high is None else int(high))
+        else:
+            facets.values[key] = _facet_values(agg)
+    for name in request.user:
+        facets.user[name] = _facet_values(aggs[f"u_{name}"])
+    return facets
 
 
 #: What each sorted field's values are, for checking a browse cursor (``nada_ai.search.cursor``).
@@ -259,6 +392,10 @@ class SearchJob:
     cursor: Cursor | None = None
     #: Seconds each OpenSearch request may take (setting ``search_timeout_seconds``).
     timeout_seconds: float = 5.0
+    #: The facet counts asked for, or ``None``.
+    facets: FacetRequest | None = None
+    #: The most values one facet lists (setting ``studies_facet_size``).
+    facet_size: int = 500
 
 
 @dataclass
@@ -274,6 +411,7 @@ class StudyPage:
     offset: int | None = None
     next_cursor: str | None = None
     prev_cursor: str | None = None
+    facets: StudyFacets | None = None
 
 
 def _total(response: dict[str, Any]) -> int:
@@ -292,6 +430,38 @@ async def _search(client: Any, index: str, body: dict[str, Any], timeout_seconds
         return await client.search(index=index, body=body, request_timeout=timeout_seconds)
     except NotFoundError as e:
         raise IndexNotReady(index) from e
+
+
+@dataclass
+class FacetCounts:
+    """The facet request of a search: its counts (``None`` when none were asked for), time and body."""
+
+    facets: StudyFacets | None = None
+    took_ms: float = 0.0
+    request_bodies: list[dict[str, Any]] = field(default_factory=list)
+
+    def into(self, page: StudyPage) -> StudyPage:
+        page.facets = self.facets
+        page.took_ms = (page.took_ms or 0.0) + self.took_ms
+        page.request_bodies = [*page.request_bodies, *self.request_bodies]
+        return page
+
+
+async def facet_counts(job: SearchJob, match: dict[str, Any] | None) -> FacetCounts:
+    """The facet counts of the result set ``match`` selects (see :func:`facets_body`), when the job asks for them."""
+    if job.facets is None:
+        return FacetCounts()
+    body = facets_body(match, job.filters, job.facets, job.facet_size)
+    response = await _search(job.client, job.index, body, job.timeout_seconds)
+    return FacetCounts(parse_facets(response, job.facets), _took(response), [body])
+
+
+def _semantic_match(sids: list[int]) -> dict[str, Any]:
+    return {"terms": {"sid": sids}}
+
+
+def _hybrid_match(text: str, sids: list[int]) -> dict[str, Any]:
+    return {"bool": {"should": [lexical_query(text), _semantic_match(sids)], "minimum_should_match": 1}}
 
 
 # ---------------------------------------------------------------------------------------
@@ -318,7 +488,9 @@ async def browse(job: SearchJob) -> StudyPage:
     """Filter-only listing: exact ``found``, exact per-type counts, deterministic order, and the cursors of the next
     and previous pages (a browse pages past ``max_offset`` with them)."""
     body = browse_body(job.filters, job.sort_by, job.sort_order, job.limit, job.offset, job.cursor)
-    response = await _search(job.client, job.index, body, job.timeout_seconds)
+    response, facets = await asyncio.gather(
+        _search(job.client, job.index, body, job.timeout_seconds), facet_counts(job, None)
+    )
     found = _total(response)
     if found == 0:
         await _raise_if_index_empty(job)
@@ -341,7 +513,7 @@ async def browse(job: SearchJob) -> StudyPage:
     def cursor_from(row: dict[str, Any], direction: Direction, position: int) -> str:
         return encode(Cursor(direction, tuple(row["sort"]), position, found, False))
 
-    return StudyPage(
+    page = StudyPage(
         found=found,
         counts_by_type=_by_type(response),
         hits=[
@@ -354,6 +526,7 @@ async def browse(job: SearchJob) -> StudyPage:
         next_cursor=cursor_from(rows[-1], Direction.after, offset + len(rows)) if has_next and rows else None,
         prev_cursor=cursor_from(rows[0], Direction.before, offset) if has_prev and rows else None,
     )
+    return facets.into(page)
 
 
 # ---------------------------------------------------------------------------------------
@@ -565,17 +738,19 @@ async def exact_idno_match(job: SearchJob) -> StudyPage | None:
     filters = list(filter_clauses(job.filters))
     if job.filters.types:
         filters.append({"terms": {f"{FILTER_FACETS_KEY}.dataset_type": job.filters.types}})
+    match = {"term": {"idno": token}}
     body = {
         "size": max(1, job.offset + job.limit),
         "track_total_hits": True,
         "_source": ["sid", "idno", f"{FILTER_FACETS_KEY}.dataset_type"],
-        "query": {"bool": {"filter": [*filters, {"term": {"idno": token}}]}},
+        "query": {"bool": {"filter": [*filters, match]}},
         "sort": [{"sid": {"order": "asc"}}],
     }
     response = await _search(job.client, job.index, body, job.timeout_seconds)
     hits = response["hits"]["hits"]
     if not hits:
         return None
+    facets = await facet_counts(job, match)
 
     counts: dict[str, int] = {}
     for h in hits:
@@ -585,9 +760,10 @@ async def exact_idno_match(job: SearchJob) -> StudyPage | None:
         {"sid": int(h["_source"]["sid"]), "idno": h["_source"]["idno"], "score": None, "matched_by": ["idno"]}
         for h in hits[job.offset : job.offset + job.limit]
     ]
-    return StudyPage(
+    page = StudyPage(
         found=_total(response), counts_by_type=counts, hits=page_hits, took_ms=_took(response), request_bodies=[body]
     )
+    return facets.into(page)
 
 
 def _keyword_hit(hit: dict[str, Any]) -> dict[str, Any]:
@@ -609,17 +785,20 @@ async def lexical(job: SearchJob) -> StudyPage:
         else sort_clause(job.sort_by, job.sort_order)
     )
     body = keyword_body(job.query, job.filters, sort=sort, limit=job.limit, offset=job.offset)
-    response = await _search(job.client, job.index, body, job.timeout_seconds)
+    response, facets = await asyncio.gather(
+        _search(job.client, job.index, body, job.timeout_seconds), facet_counts(job, lexical_query(job.query))
+    )
     found = _total(response)
     if found == 0:
         await _raise_if_index_empty(job)
-    return StudyPage(
+    page = StudyPage(
         found=found,
         counts_by_type=_by_type(response),
         hits=[_keyword_hit(h) for h in response["hits"]["hits"]],
         took_ms=_took(response),
         request_bodies=[body],
     )
+    return facets.into(page)
 
 
 # ---------------------------------------------------------------------------------------
@@ -695,25 +874,31 @@ async def semantic(job: SearchJob) -> StudyPage:
     block, took, bodies = await _semantic_block(job)
     if not block:
         await _raise_if_index_empty(job)
-        return StudyPage(0, {}, [], took, bodies)
+        return (await facet_counts(job, _semantic_match([]))).into(StudyPage(0, {}, [], took, bodies))
 
     types = job.filters.types
     counts = dict(Counter(r.dataset_type or "unknown" for r in block))
+    by_sid = {r.sid: r for r in block}
     if job.sort_by is SortField.relevance:
+        facets = await facet_counts(job, _semantic_match(list(by_sid)))
         ordered = block if job.sort_order is SortOrder.desc else block[::-1]
         kept = [r for r in ordered if not types or (r.dataset_type or "unknown") in types]
-        return StudyPage(len(kept), counts, [_hit(r) for r in kept[job.offset : job.offset + job.limit]], took, bodies)
+        page = StudyPage(len(kept), counts, [_hit(r) for r in kept[job.offset : job.offset + job.limit]], took, bodies)
+        return facets.into(page)
 
     # the sids pin the set; `types` narrows `found` only, exactly as in browse
-    by_sid = {r.sid: r for r in block}
-    resorted = await browse(replace(job, query=None, filters=StudyFilters(sids=list(by_sid), types=types)))
-    return StudyPage(
+    resorted, facets = await asyncio.gather(
+        browse(replace(job, query=None, filters=StudyFilters(sids=list(by_sid), types=types), facets=None)),
+        facet_counts(job, _semantic_match(list(by_sid))),
+    )
+    page = StudyPage(
         resorted.found,
         resorted.counts_by_type,
         [_hit(by_sid[h["sid"]]) for h in resorted.hits],
         took + (resorted.took_ms or 0.0),
         [*bodies, *resorted.request_bodies],
     )
+    return facets.into(page)
 
 
 # ---------------------------------------------------------------------------------------
@@ -786,8 +971,9 @@ async def hybrid(job: SearchJob) -> StudyPage:
     by_sid = {r.sid: r for r in block}
     types = job.filters.types
 
+    facet_task = facet_counts(job, _hybrid_match(job.query, block_ids))
+
     if job.sort_by is not SortField.relevance:
-        agree, took_agree, body_agree = await _keyword_matches_among(job, block_ids)
         body = keyword_body(
             job.query,
             job.filters,
@@ -796,18 +982,24 @@ async def hybrid(job: SearchJob) -> StudyPage:
             offset=job.offset,
             union_sids=block_ids,
         )
-        response = await _search(job.client, job.index, body, job.timeout_seconds)
-        return StudyPage(
-            found=_total(response),
-            counts_by_type=_by_type(response),
-            hits=[
-                _fused_hit(by_sid[sid], agree)
-                if (sid := int(h["_source"]["sid"])) in by_sid
-                else _hybrid_hit(_keyword_hit(h))
-                for h in response["hits"]["hits"]
-            ],
-            took_ms=took + took_agree + _took(response),
-            request_bodies=[*bodies, body_agree, body],
+        (agree, took_agree, body_agree), response, facets = await asyncio.gather(
+            _keyword_matches_among(job, block_ids),
+            _search(job.client, job.index, body, job.timeout_seconds),
+            facet_task,
+        )
+        return facets.into(
+            StudyPage(
+                found=_total(response),
+                counts_by_type=_by_type(response),
+                hits=[
+                    _fused_hit(by_sid[sid], agree)
+                    if (sid := int(h["_source"]["sid"])) in by_sid
+                    else _hybrid_hit(_keyword_hit(h))
+                    for h in response["hits"]["hits"]
+                ],
+                took_ms=took + took_agree + _took(response),
+                request_bodies=[*bodies, body_agree, body],
+            )
         )
 
     # the head: the best keyword matches over ALL types (the tab never changes the order), fused with the semantic studies
@@ -818,8 +1010,10 @@ async def hybrid(job: SearchJob) -> StudyPage:
         limit=job.policy.fusion_window,
         offset=0,
     )
-    (agree, took_agree, body_agree), head_response = await asyncio.gather(
-        _keyword_matches_among(job, block_ids), _search(job.client, job.index, head_body, job.timeout_seconds)
+    (agree, took_agree, body_agree), head_response, facets = await asyncio.gather(
+        _keyword_matches_among(job, block_ids),
+        _search(job.client, job.index, head_body, job.timeout_seconds),
+        facet_task,
     )
     keyword_head = [_keyword_ranked(h) for h in head_response["hits"]["hits"]]
     fused = rrf_fuse(keyword_head, block)
@@ -865,13 +1059,14 @@ async def hybrid(job: SearchJob) -> StudyPage:
     counts = _by_type(response)
     for r in fused:
         counts[r.dataset_type or "unknown"] = counts.get(r.dataset_type or "unknown", 0) + 1
-    return StudyPage(
+    page = StudyPage(
         found=len(shown) + tail_found,
         counts_by_type=counts,
         hits=hits,
         took_ms=took + took_agree + _took(head_response) + _took(response),
         request_bodies=[*bodies, body_agree, head_body, body],
     )
+    return facets.into(page)
 
 
 #: One executor per effective mode this engine serves.

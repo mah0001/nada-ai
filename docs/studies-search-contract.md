@@ -14,8 +14,8 @@ which engine is running and what it supports.
    NADA's own `surveys.idno` (taken from the extract `core_fields.idno`, not from the record's schema idno, which can
    differ). NADA drops a hit whose `idno` does not match its DB row and logs it (this flags an index that no longer
    matches the DB).
-3. **NADA resolves vocabulary; nada-ai matches ids.** Country names, ISO codes, regions, form codes and timeseries
-   databases are turned into ids by NADA before the call. Regions become country ids.
+3. **NADA resolves vocabulary; nada-ai matches ids.** Country names, ISO codes and form codes are turned into ids by
+   NADA before the call.
 4. **Nothing is dropped silently.** Unknown filter keys and malformed values are rejected with an error. The effective
    search is echoed in `applied`.
 5. **No versioning.** The contract evolves by adding optional fields. Clients must ignore unknown response fields and
@@ -60,7 +60,7 @@ Examples: `request_minimal.json`, `request_query.json`, `request_browse_all_filt
 | `limit` | int 1..100 | 15 | |
 | `offset` | int 0..10000 | 0 | |
 | `cursor` | string \| null | null | Browse only: a `next_cursor`/`prev_cursor` of an earlier page of the same browse, in place of `offset` (6.1). |
-| `include_facets` | bool | false | Reserved for dynamic filters. `true` gives `unsupported_capability` unless `capabilities.facets`. |
+| `facets` | `{keys, user}` \| null | null | Facet counts to return (6.2): `keys` from `countries`, `regions`, `collections`, `form_ids`, `data_class_ids`, `tags`, `databases`, `years`; `user` lists user-defined facet names. Needs `capabilities.facets`, otherwise `unsupported_capability`. Empty means none. |
 | `include_debug` | bool | false | Adds an engine-specific `debug` object to the response. |
 
 ## 5. Filters and sorting
@@ -84,20 +84,21 @@ proposed **step 3 index field** (flat fields; names follow the NADA extract keys
 |---|---|---|---|---|
 | `types` | string list | NADA dataset types (`survey`, `timeseries`, `document`, `geospatial`, `table`, `image`, `video`, `script`, `timeseriesdb`) | `dataset_type` | `surveys.type` |
 | `countries` | int list | Country ids | `countries` | `survey_countries.cid` |
+| `regions` | int list | Region ids (of the study's countries); ANDed with `countries` | `regions` | `region_countries` |
 | `year_from`, `year_to` | int 1..9999 | Data collection year range, inclusive. Only `year_from`: at or after. Only `year_to`: at or before. `year_from > year_to` is rejected. | `years` (range query) | `survey_years.data_coll_year` |
 | `repository` | string | Active repository scope; matches primary or secondary membership | `repositories` | `surveys.repositoryid` plus `survey_repos` |
 | `collections` | string list | Collection facet (repository ids), ANDed with `repository` | `repositories` | same |
 | `form_ids` | int list | Data access form ids | `formid` | `surveys.formid` |
 | `data_class_ids` | int list | Data classification ids | `data_class_id` | `surveys.data_class_id` |
 | `tags` | string list | Study tags | `tags` | `survey_tags.tag` |
+| `topics` | int list | Topic ids | `topics` | `survey_topics.tid` |
+| `databases` | string list | Timeseries database idnos | `ts_databases` | `timeseries_db_links.db_idno` |
 | `facets` | `{name: [term ids]}` | User-defined facets; any-of within a name, AND across names | `fq_<name>` | `survey_facets.term_id` |
-| `sids` | int list | Restrict to these internal ids (used for timeseries database selection) | `sid` | `surveys.id` |
+| `sids` | int list | Restrict to these internal ids | `sid` | `surveys.id` |
 | `created_from`, `created_to` | int (unix seconds) | Created range, inclusive | `created` | `surveys.created` |
 
-Value limits: `types` 20, `countries` 300, `collections` 100, `form_ids` 50, `data_class_ids` 50, `tags` 50,
-`sids` 5000 entries; facet names match `[A-Za-z0-9_-]{1,64}`.
-
-Derived data is deliberately not indexed. `regions` is not a filter: NADA expands a region to its country ids.
+Value limits: `types` 20, `countries` 300, `regions` 300, `collections` 100, `form_ids` 50, `data_class_ids` 50,
+`tags` 50, `topics` 500, `databases` 100, `sids` 5000 entries; facet names match `[A-Za-z0-9_-]{1,64}`.
 
 ### 5.3 Sort
 
@@ -128,6 +129,7 @@ Examples: `response_hybrid.json`, `response_browse.json`, `response_types_filter
 | `hits[]` | `sid`, `idno`, `rank` (1-based across the whole set), `score`, `matched_by`, optional `passages` |
 | `applied` | Effective `query`, `mode`, `filters`, `sort`, `limit`, `offset`, `paging` (`offset` or `cursor`) |
 | `warnings[]` | `{code, message}`; codes `semantic_unavailable`, `sort_adjusted` |
+| `facets` | Facet counts when the request asked for them (6.2), else null |
 | `timing_ms` | Optional timings |
 | `debug` | Present only when requested |
 
@@ -184,7 +186,28 @@ studies (`page` is 1-based, `excerpt` is whitespace-normalised text); it replace
   a match weighs least.
 - The relevance floor and cutoff of the semantic side, and the two windows, are server settings, not request parameters.
 
-### 6.2 Mode handling
+### 6.2 Facets
+
+Design and reasoning: `studies-search-facets.md`.
+
+```json
+"facets": {
+  "values": {"countries": {"buckets": [{"value": "12", "count": 40}], "more": false}},
+  "user": {"datakind": {"buckets": [{"value": "4", "count": 9}], "more": false}},
+  "years": {"min": 1990, "max": 2022}
+}
+```
+
+- The counts are distinct studies in the result set: the query and every filter narrow them, except that **each facet
+  ignores its own filter** (`years` ignores `year_from`/`year_to`, a user facet its own terms), so it lists the values
+  that can be added to the selection. `repository`, `sids`, `created_*`, `topics` and the tab (`types`) always apply.
+- `value` is a string (ids too); buckets are ordered by count, then value; at most `studies_facet_size` (setting,
+  default 500) per facet, `more` is true when some were left out. Selected values beyond them are added when they
+  match; a value is never listed with count 0.
+- In `semantic` and `hybrid` the semantic studies are those found with every filter applied, so in a facet with a
+  selection the other values count only keyword matches and the semantic studies that were returned.
+
+### 6.3 Mode handling
 
 - `auto` degrades gracefully: if the semantic leg is unavailable it returns lexical results with a
   `semantic_unavailable` warning, and `applied.mode` shows what ran.
@@ -237,7 +260,7 @@ Encoded in `StudySearchResponse.invariant_violations()` and reused by the implem
 
 ## 10. Out of scope for this contract
 
-Dynamic facets (`include_facets` reserved), a reranker, and the admin route clean-up (including moving `{idno}` admin paths
+A reranker, and the admin route clean-up (including moving `{idno}` admin paths
 to `{sid}`). Citations search is a separate contract: `citations-search-contract.md`.
 
 **Variables search is now implemented, as its own, separate contract** — `POST /variables/search`, lexical only, no

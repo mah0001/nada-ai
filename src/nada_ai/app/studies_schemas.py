@@ -6,8 +6,7 @@ This module defines the wire contract only; it contains no search logic. The wri
 Design rules (see the spec for the reasoning):
 
 * Studies are identified by the NADA internal id ``sid`` (``surveys.id``); ``idno`` is returned as a guard.
-* NADA resolves vocabulary (country names, regions, form codes, ...) into ids before calling; nada-ai only
-  matches ids.
+* NADA resolves vocabulary (country names, form codes, ...) into ids before calling; nada-ai only matches ids.
 * Nothing is dropped silently: unknown filter keys and malformed values are rejected, and the effective
   search is echoed back in ``applied``.
 * The contract is not versioned. New optional fields may be added; clients must ignore unknown response
@@ -142,6 +141,7 @@ class FilterSpec(BaseModel):
 CANONICAL_FILTERS: tuple[FilterSpec, ...] = (
     FilterSpec(key="types", type="string_list", description="NADA dataset types (surveys.type); any-of"),
     FilterSpec(key="countries", type="int_list", description="Country ids; any-of"),
+    FilterSpec(key="regions", type="int_list", description="Region ids (of the study's countries); any-of"),
     FilterSpec(key="year_from", type="int", description="Data collection year lower bound (inclusive)"),
     FilterSpec(key="year_to", type="int", description="Data collection year upper bound (inclusive)"),
     FilterSpec(key="repository", type="string", description="Active repository scope (primary or secondary)"),
@@ -149,6 +149,8 @@ CANONICAL_FILTERS: tuple[FilterSpec, ...] = (
     FilterSpec(key="form_ids", type="int_list", description="Data access form ids; any-of"),
     FilterSpec(key="data_class_ids", type="int_list", description="Data classification ids; any-of"),
     FilterSpec(key="tags", type="string_list", description="Study tags; any-of"),
+    FilterSpec(key="topics", type="int_list", description="Topic ids; any-of"),
+    FilterSpec(key="databases", type="string_list", description="Timeseries database idnos; any-of"),
     FilterSpec(key="facets", type="facet_map", description="User-defined facets: name -> term ids (any-of per name)"),
     FilterSpec(key="sids", type="int_list", description="Restrict to these internal study ids"),
     FilterSpec(key="created_from", type="int", description="Created timestamp lower bound (unix seconds)"),
@@ -171,6 +173,7 @@ class StudyFilters(BaseModel):
 
     types: list[Token] | None = Field(default=None, max_length=20)
     countries: list[PositiveInt] | None = Field(default=None, max_length=300)
+    regions: list[PositiveInt] | None = Field(default=None, max_length=300)
     year_from: int | None = Field(default=None, ge=1, le=9999)
     year_to: int | None = Field(default=None, ge=1, le=9999)
     repository: Token | None = None
@@ -178,6 +181,8 @@ class StudyFilters(BaseModel):
     form_ids: list[PositiveInt] | None = Field(default=None, max_length=50)
     data_class_ids: list[PositiveInt] | None = Field(default=None, max_length=50)
     tags: list[Token] | None = Field(default=None, max_length=50)
+    topics: list[PositiveInt] | None = Field(default=None, max_length=500)
+    databases: list[Token] | None = Field(default=None, max_length=100)
     facets: dict[FacetName, list[PositiveInt]] | None = None
     sids: list[PositiveInt] | None = Field(default=None, max_length=5000)
     created_from: int | None = Field(default=None, ge=0)
@@ -185,7 +190,18 @@ class StudyFilters(BaseModel):
 
     @model_validator(mode="after")
     def _normalise(self) -> StudyFilters:
-        for name in ("types", "countries", "collections", "form_ids", "data_class_ids", "tags", "sids"):
+        for name in (
+            "types",
+            "countries",
+            "regions",
+            "collections",
+            "form_ids",
+            "data_class_ids",
+            "tags",
+            "topics",
+            "databases",
+            "sids",
+        ):
             values = getattr(self, name)
             if values is not None:
                 values = _dedupe(values)
@@ -202,6 +218,73 @@ class StudyFilters(BaseModel):
     def active(self) -> dict[str, Any]:
         """Normalised filters that constrain the search (what ``applied.filters`` echoes)."""
         return self.model_dump(exclude_none=True)
+
+
+# --------------------------------------------------------------------------------------
+# Facets
+# --------------------------------------------------------------------------------------
+
+
+class FacetKey(StrEnum):
+    """A facet the study search counts; each one ignores its own filter (see ``docs/studies-search-facets.md``)."""
+
+    countries = "countries"
+    regions = "regions"
+    collections = "collections"
+    form_ids = "form_ids"
+    data_class_ids = "data_class_ids"
+    tags = "tags"
+    databases = "databases"
+    years = "years"
+
+
+class FacetRequest(BaseModel):
+    """Which facet counts to return: built-in facets by key, user-defined facets by name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keys: list[FacetKey] = Field(default_factory=list, max_length=len(FacetKey))
+    user: list[FacetName] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _normalise(self) -> FacetRequest:
+        self.keys = _dedupe(self.keys)
+        self.user = _dedupe(self.user)
+        return self
+
+    def empty(self) -> bool:
+        return not self.keys and not self.user
+
+
+class FacetBucket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(description="The filter value (ids as strings)")
+    count: int = Field(ge=0, description="Distinct studies")
+
+
+class FacetValues(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    buckets: list[FacetBucket]
+    more: bool = Field(description="True when values beyond ``studies_facet_size`` were left out")
+
+
+class YearRange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min: int | None
+    max: int | None
+
+
+class StudyFacets(BaseModel):
+    """Facet counts over the search's result set; each facet ignores its own filter."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    values: dict[FacetKey, FacetValues] = Field(default_factory=dict)
+    user: dict[FacetName, FacetValues] = Field(default_factory=dict)
+    years: YearRange | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -230,7 +313,9 @@ class StudySearchRequest(BaseModel):
         description="Browse only: a next_cursor or prev_cursor of an earlier page of this browse, in place of offset, "
         "to page past max_offset",
     )
-    include_facets: bool = Field(default=False, description="Reserved; requires the ``facets`` capability")
+    facets: FacetRequest | None = Field(
+        default=None, description="Facet counts to return; requires the ``facets`` capability"
+    )
     include_debug: bool = False
 
     @model_validator(mode="after")
@@ -240,6 +325,8 @@ class StudySearchRequest(BaseModel):
             parts = split_quoted(query)
             # blank, or quotes with nothing in them: nothing is asked for, so it is a browse
             self.query = query if parts.phrases or parts.rest else None
+        if self.facets is not None and self.facets.empty():
+            self.facets = None
         return self
 
 
@@ -322,6 +409,7 @@ class StudySearchResponse(BaseModel):
     hits: list[StudyHit]
     applied: Applied
     warnings: list[ResponseWarning] = Field(default_factory=list)
+    facets: StudyFacets | None = Field(default=None, description="Present when the request asked for facets")
     timing_ms: dict[str, float] | None = None
     debug: dict[str, Any] | None = None
 

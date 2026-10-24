@@ -12,7 +12,10 @@ FILTER_FACETS_KEY = "filter_facets"
 # Filter keys as NADA's metadata-extract API names them (see ``filters`` in a study extract). Everything else is
 # handled by the dynamic templates below: ``fq_<facet>`` (user-defined facets) are integer term ids, any other key
 # is a keyword.
-_KEYWORD_FILTER_KEYS = ("dataset_type", "form_model", "repositoryid", "repositories", "tags")
+_KEYWORD_FILTER_KEYS = ("dataset_type", "form_model", "repositoryid", "repositories", "tags", "ts_databases")
+#: Keyword fields the study search aggregates (tabs and facets): their global ordinals are built at refresh, not by the
+#: first search after an index change.
+_EAGER_ORDINAL_KEYS = frozenset({"dataset_type", "repositories", "tags", "ts_databases"})
 _INTEGER_FILTER_KEYS = (
     "doctype",
     "published",
@@ -22,6 +25,7 @@ _INTEGER_FILTER_KEYS = (
     "years",
     "countries",
     "regions",
+    "topics",
     "data_class_id",
 )
 
@@ -84,7 +88,10 @@ def filter_facets_mapping(prefix: str = "") -> tuple[dict[str, Any], list[dict[s
     queries). ``prefix`` is the path of the object that holds ``filter_facets``: ``"metadata."`` on chunk
     documents, ``""`` on study documents.
     """
-    properties: dict[str, Any] = {key: {"type": "keyword"} for key in _KEYWORD_FILTER_KEYS}
+    properties: dict[str, Any] = {
+        key: {"type": "keyword", "eager_global_ordinals": True} if key in _EAGER_ORDINAL_KEYS else {"type": "keyword"}
+        for key in _KEYWORD_FILTER_KEYS
+    }
     properties.update({key: {"type": "integer"} for key in _INTEGER_FILTER_KEYS})
     templates = [
         {

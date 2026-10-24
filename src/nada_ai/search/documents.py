@@ -39,7 +39,7 @@ def langdoc_to_source(
     ``search.dynamic_filters.normalize_external_filters``/``normalized_to_facets_map``)
     bake NADA's dynamic filter data directly into the point at creation time,
     so a freshly bulk-ingested document is facetable immediately rather than
-    needing a separate ``sync_filters_for_idno`` patch after the fact — see
+    needing a separate ``sync_filters_for_sid`` patch after the fact — see
     ``ingest.pipeline.iter_langdoc_records``. Only pass ``filter_facets`` for
     the Qdrant backend; OpenSearch doesn't use it.
     """

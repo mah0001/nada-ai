@@ -21,7 +21,7 @@ from fastapi.responses import Response
 from opensearchpy.exceptions import ConnectionTimeout, TransportError
 
 from nada_ai.app.auth import Principal
-from nada_ai.app.info import modes_for
+from nada_ai.app.info import facets_for, modes_for
 from nada_ai.app.keys_store import Role
 from nada_ai.app.state import AppState, ensure_embedding_initialized, get_state
 from nada_ai.app.studies_errors import StudiesApiError, opensearch_error, studies_error_handler, studies_guard
@@ -264,6 +264,8 @@ async def _execute(
         embed=_embedder(s),
         cursor=cursor,
         timeout_seconds=s.settings.search_timeout_seconds,
+        facets=body.facets,
+        facet_size=s.settings.studies_facet_size,
     )
     if mode is not EffectiveMode.browse and job.query is not None:
         exact = await exact_idno_match(job)
@@ -306,8 +308,8 @@ async def studies_search(
     implemented = modes_for(engine, s.settings)
     if not implemented:
         raise _unsupported("studies_search", engine, f"The {engine.value} engine does not support studies_search")
-    if body.include_facets:
-        raise _unsupported("facets", engine, "Facet counts are not implemented")
+    if body.facets is not None and not facets_for(engine, s.settings):
+        raise _unsupported("facets", engine, f"The {engine.value} engine does not count facets")
     if body.include_debug and principal.role is not Role.admin:
         raise StudiesApiError(ErrorCode.forbidden, "include_debug requires the admin role")
 
@@ -355,6 +357,7 @@ async def studies_search(
             paging="offset" if cursor is None else "cursor",
         ),
         warnings=warnings,
+        facets=page.facets,
         timing_ms={"total": round((time.perf_counter() - started) * 1000, 1), "engine": float(page.took_ms or 0)},
         debug={"opensearch_requests": page.request_bodies} if body.include_debug else None,
     )

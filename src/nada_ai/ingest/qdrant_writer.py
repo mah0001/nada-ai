@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -14,6 +15,7 @@ from nada_ai.ingest.pipeline import iter_langdoc_records
 from nada_ai.ingest.ports import IngestWriterPort
 from nada_ai.ingest.progress import CancelToken, IngestProgressTracker
 from nada_ai.ingest.quality import QualityReport
+from nada_ai.ingest.study_sources import StudySource
 from nada_ai.search.backend.opensearch.embeddings import EmbeddingService
 from nada_ai.search.backend.opensearch.mapping import EMBEDDING_FIELD, TEXT_FIELD
 from nada_ai.search.backend.qdrant.sparse_lexical import embed_documents_sparse
@@ -55,13 +57,6 @@ def _sid_of(source: dict[str, Any]) -> int | None:
     meta = source.get("metadata")
     sid = meta.get("sid") if isinstance(meta, dict) else None
     return int(sid) if sid is not None else None
-
-
-def _idno_of(source: dict[str, Any]) -> str | None:
-    """The catalog idno a source document belongs to, for attributing write errors to it."""
-    meta = source.get("metadata")
-    idno = meta.get("idno") if isinstance(meta, dict) else None
-    return str(idno) if idno else None
 
 
 def _ensure_payload_indexes(client: QdrantClient, collection: str) -> None:
@@ -156,7 +151,7 @@ class QdrantIngestWriter(IngestWriterPort):
 
     def run_bulk(
         self,
-        pairs: list[tuple[str, str]],
+        sources: Iterable[StudySource],
         *,
         force: bool = False,
         recreate_target: bool = False,
@@ -206,7 +201,6 @@ class QdrantIngestWriter(IngestWriterPort):
                 points = [_point(did, v, src, sv) for (did, v, src), sv in zip(batch_buf, sparse_vecs, strict=True)]
             else:
                 points = [_point(did, v, src) for did, v, src in batch_buf]
-            idno_by_point_id = {str(did): _idno_of(src) for did, _, src in batch_buf}
             sid_by_point_id = {str(did): _sid_of(src) for did, _, src in batch_buf}
             batch_buf.clear()
 
@@ -233,7 +227,7 @@ class QdrantIngestWriter(IngestWriterPort):
                         confirm(point.id, True)
                     except Exception as point_exc:
                         errors.append(
-                            {"id": point.id, "idno": idno_by_point_id.get(str(point.id)), "error": str(point_exc)}
+                            {"id": point.id, "sid": sid_by_point_id.get(str(point.id)), "error": str(point_exc)}
                         )
                         confirm(point.id, False, str(point_exc))
 
@@ -241,8 +235,7 @@ class QdrantIngestWriter(IngestWriterPort):
             for doc_id, vec, source in iter_langdoc_records(
                 self._settings,
                 embedding,
-                pairs,
-                force=force,
+                sources,
                 show_progress_bar=show_progress_bar,
                 buffer_size=buffer_size,
                 quality_report=quality_report,
@@ -253,14 +246,14 @@ class QdrantIngestWriter(IngestWriterPort):
             ):
                 if not vec:
                     message = "missing vector (opensearch_ml is not supported on Qdrant)"
-                    errors.append({"id": doc_id, "idno": _idno_of(source), "error": message})
+                    errors.append({"id": doc_id, "sid": _sid_of(source), "error": message})
                     if progress is not None and (sid := _sid_of(source)) is not None:
                         progress.confirm(sid, False, message)
                     continue
                 try:
                     batch_buf.append((doc_id, vec, source))
                 except Exception as e:
-                    errors.append({"id": doc_id, "idno": _idno_of(source), "error": str(e)})
+                    errors.append({"id": doc_id, "sid": _sid_of(source), "error": str(e)})
                     if progress is not None and (sid := _sid_of(source)) is not None:
                         progress.confirm(sid, False, str(e))
                     continue

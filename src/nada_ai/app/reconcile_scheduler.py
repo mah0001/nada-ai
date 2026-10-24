@@ -50,11 +50,11 @@ from nada_ai.ingest.search_index_sync import (
     AckRefused,
     SearchIndexQueueItem,
     ack_batch,
-    fetch_studies_by_sids,
     get_status,
     list_queue,
     process_item,
 )
+from nada_ai.ingest.study_sources import fetch_studies_by_sids
 from nada_ai.nada import gate as nada_gate
 from nada_ai.search.backend.opensearch.generation import forget_index_generation
 from nada_ai.settings import Settings
@@ -543,6 +543,7 @@ class Scheduler:
             self.st.current = {
                 "queue_id": item.id,
                 "object_type": item.object_type,
+                "object_id": item.object_id,
                 "object_key": item.object_key,
                 "change_class": item.change_class,
                 "started_at": int(_now()),
@@ -572,7 +573,13 @@ class Scheduler:
                         self._pause_unavailable(str(e))
                         stopped = True
                         break
-                    logger.warning("search-index item failed (%s %s): %s", item.change_class, item.object_key, e)
+                    logger.warning(
+                        "search-index item failed (%s %s %s): %s",
+                        item.change_class,
+                        item.object_type,
+                        item.object_id,
+                        e,
+                    )
                     acks.append(self._failed(item, str(e)))
                 else:
                     # a delete too: NADA takes indexed or failed only, and handles a delete row by its change class
@@ -591,7 +598,13 @@ class Scheduler:
 
     def _failed(self, item: SearchIndexQueueItem, error: str) -> dict[str, Any]:
         self.st.pass_["failed"] = self.st.pass_.get("failed", 0) + 1
-        self.st.last_error = {"at": int(_now()), "kind": "item", "object_key": item.object_key, "message": error[:500]}
+        self.st.last_error = {
+            "at": int(_now()),
+            "kind": "item",
+            "object_id": item.object_id,
+            "object_key": item.object_key,
+            "message": error[:500],
+        }
         return {"id": item.id, "result": "failed", "changed": item.changed, "error": error}
 
     async def _send_acks(self, acks: list[dict[str, Any]], exclude: set[int], *, resend: bool = False) -> bool:

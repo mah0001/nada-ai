@@ -121,7 +121,10 @@ def test_chunk_index_has_flat_filter_facets_and_no_filter_fields() -> None:
     assert "filter_fields" not in metadata
     facets = metadata["filter_facets"]["properties"]
     assert facets["countries"] == {"type": "integer"}
-    assert facets["dataset_type"] == {"type": "keyword"}
+    assert facets["dataset_type"] == {"type": "keyword", "eager_global_ordinals": True}
+    assert facets["form_model"] == {"type": "keyword"}
+    assert facets["topics"] == {"type": "integer"}
+    assert facets["ts_databases"] == {"type": "keyword", "eager_global_ordinals": True}
 
 
 def test_study_index_is_strict_and_typed() -> None:

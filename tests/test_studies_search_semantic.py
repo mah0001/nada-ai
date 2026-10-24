@@ -137,13 +137,13 @@ def test_chunk_filters_point_at_the_chunk_fields() -> None:
     )
     assert clauses == [
         {"term": {"metadata.filter_facets.published": 1}},
-        {"terms": {"metadata.filter_facets.countries": [16]}},
-        {"range": {"metadata.filter_facets.years": {"gte": 2010}}},
         {"term": {"metadata.filter_facets.repositories": "demo"}},
-        {"terms": {"metadata.filter_facets.formid": [1]}},
-        {"terms": {"metadata.filter_facets.fq_author": [7]}},
         {"terms": {"metadata.sid": [2]}},
         {"range": {"metadata.created": {"gte": 5}}},
+        {"terms": {"metadata.filter_facets.countries": [16]}},
+        {"terms": {"metadata.filter_facets.formid": [1]}},
+        {"range": {"metadata.filter_facets.years": {"gte": 2010}}},
+        {"terms": {"metadata.filter_facets.fq_author": [7]}},
     ]  # `types` is applied after the cut, on every leg
 
 
