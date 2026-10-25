@@ -428,8 +428,8 @@ ingestion on data you don't control.
 and can be stopped and resumed instead of running as an opaque, unstoppable block:
 
 - **Progress**: `GET /jobs/{id}` (and `GET /jobs`) includes a `progress` object —
-  `{"processed", "total", "failed", "current_idno", "percent"}` — updated once per
-  idno as the run goes, not just once at the end.
+  `{"processed", "total", "failed", "current_sid", "percent"}` (`current_citation_id` in a citation job) — updated
+  once per study (or citation) as the run goes, not just once at the end.
 - **Stop**: `DELETE /jobs/{id}` (role `write`) sets a cancel token the ingest loop
   checks once per idno. Note the asymmetry this implies: the job's *status* flips
   to `cancelled` almost immediately (the wrapping coroutine really is cancelled),

@@ -573,7 +573,7 @@ def sync_citations_op(
                     "total": len(citation_ids),
                     "failed": failed,
                     "percent": round(100 * done / len(citation_ids), 1),
-                    "current_id": citation_id,
+                    "current_citation_id": citation_id,
                 }
             )
     return {

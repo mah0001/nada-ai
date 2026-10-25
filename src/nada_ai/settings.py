@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     #: (``found_is_lower_bound``) beyond. A browse (no query) is always counted exactly. Counting is what a broad
     #: query costs most on a large index.
     variables_count_cap: int = Field(default=20_000, ge=100, le=10_000_000)
+
+    #: Citation search: rows reachable by offset paging (``offset + limit``); deeper pages use cursors (reported by
+    #: ``GET /info`` as ``limits.citations_max_offset``). At most OpenSearch's default ``max_result_window``, and at
+    #: least one full page of the largest size.
+    citations_max_offset: int = Field(default=10_000, ge=100, le=10_000)
     #: Seconds a search request to OpenSearch may take before it is abandoned and answered ``search_timeout``.
     search_timeout_seconds: float = Field(default=5.0, gt=0, le=120)
 

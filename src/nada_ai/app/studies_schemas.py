@@ -491,6 +491,7 @@ class Limits(BaseModel):
     semantic_window: int = Field(description="The most studies the semantic side adds to a relevance search")
     max_query_length: int
     variables_max_offset: int = Field(description="Variable search: rows reachable by offset paging (then cursors)")
+    citations_max_offset: int = Field(description="Citation search: rows reachable by offset paging (then cursors)")
     variables_count_cap: int = Field(
         description="Variable search: matches counted exactly before found is a lower bound"
     )
