@@ -1,3 +1,10 @@
+"""NADA public API client for the MCP tools.
+
+Every call is anonymous: no API key, bearer token or cookie is sent, so the tools see only published studies.
+nada-ai's NADA credential (AI4DATA_METADATA_CATALOG_*) is for indexing and can read unpublished studies; /mcp has no
+authentication, so it must never reach these calls.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -5,7 +12,6 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from ai4data.discovery.auth import get_catalog_auth_headers, get_catalog_cookies
 from ai4data.discovery.config import metadata_catalog
 
 from nada_ai.nada.models import (
@@ -93,8 +99,6 @@ async def search_catalog(request: CatalogSearchRequest) -> CatalogSearchResponse
             response = await client.get(
                 url,
                 params=params,
-                headers=get_catalog_auth_headers(),
-                cookies=get_catalog_cookies(),
             )
             response.raise_for_status()
             payload = response.json()
@@ -126,11 +130,7 @@ def get_metadata(idno: str) -> CatalogMetadataResponse:
 
     url = _catalog_metadata_url(idno)
     try:
-        response = httpx.get(
-            url,
-            headers=get_catalog_auth_headers(),
-            cookies=get_catalog_cookies(),
-        )
+        response = httpx.get(url)
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPStatusError as exc:
@@ -215,8 +215,6 @@ async def get_timeseries_data(
             response = await client.get(
                 url,
                 params=params,
-                headers=get_catalog_auth_headers(),
-                cookies=get_catalog_cookies(),
             )
             response.raise_for_status()
             payload = response.json()
@@ -264,11 +262,7 @@ async def get_indicator_schema(idno: str) -> IndicatorSchemaResponse:
     url = _timeseries_schema_url(idno)
     try:
         async with httpx.AsyncClient(timeout=_TIMESERIES_DATA_TIMEOUT) as client:
-            response = await client.get(
-                url,
-                headers=get_catalog_auth_headers(),
-                cookies=get_catalog_cookies(),
-            )
+            response = await client.get(url)
             response.raise_for_status()
             payload = response.json()
     except httpx.HTTPStatusError as exc:

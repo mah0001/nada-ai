@@ -42,12 +42,12 @@ not query nada-ai's OpenSearch index.
 
 ### What the tools can see
 
-The tools send nada-ai's NADA credential (`AI4DATA_METADATA_CATALOG_X_API_KEY`, or the bearer token or cookie) with
-every call. They see what that NADA user can see.
+The tools call NADA's public API anonymously: catalog search, study metadata, and indicator data and schema. They
+send no API key, bearer token or cookie, so they see only published studies, the same as a visitor to the catalog. An
+unpublished study answers as not found.
 
-> **Unpublished studies.** NADA returns an unpublished study's metadata to a caller with study view permission, and
-> nada-ai's NADA user needs that permission to index variables. Any MCP client can therefore read unpublished metadata
-> through `nada_get_metadata`. Keep `/mcp` private or restricted at the proxy, see [Security](#security).
+nada-ai's NADA credential (`AI4DATA_METADATA_CATALOG_X_API_KEY`) is used for indexing only. Its user can read
+unpublished studies, and `/mcp` has no authentication, so the tools never send it.
 
 ## Running it
 

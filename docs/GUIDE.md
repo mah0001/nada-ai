@@ -577,7 +577,8 @@ section covers the internals.
 
 **Where the data comes from.** The MCP tools do not query nada-ai's OpenSearch index.
 They call NADA's public API (`GET /api/catalog/search`, `/api/catalog/{idno}`,
-`/api/timeseries/data/{idno}`) with nada-ai's NADA credential. Search results are
+`/api/timeseries/data/{idno}`) anonymously, so they see only published studies;
+nada-ai's NADA credential is for indexing and is never sent. Search results are
 semantic only when NADA's own search engine is set to nada-ai, because NADA then
 sends its catalog search back to nada-ai. The MCP server therefore works the same on
 any search backend.

@@ -110,7 +110,7 @@ mkdir -p data/nada-discovery
 | `NADA_INDEX_NAME` | `nada-metadata` | Base name of the four indexes |
 | `NADA_ADMIN_API_KEY` | a long random secret | Auth is always on: without it (or a stored key) `/admin/*`, `/jobs`, `/info` and `/studies/search` answer 503. The OpenSearch compose file refuses to start without it. Generate one with `openssl rand -hex 32` |
 | `AI4DATA_METADATA_CATALOG_URL` | `https://nada.example.org/index.php` | Your NADA instance. From inside Docker, a NADA on the same machine is `http://host.docker.internal/...`, **not** `http://localhost/...` |
-| `AI4DATA_METADATA_CATALOG_X_API_KEY` | NADA API key | Its NADA user needs the **Search index** permission (view and edit) for the metadata extract and the change queue, and **Studies** view on every collection for variables. Never reuse `NADA_ADMIN_API_KEY` here. The MCP tools also call NADA with this key: see the [MCP guide](./mcp.md#what-the-tools-can-see) |
+| `AI4DATA_METADATA_CATALOG_X_API_KEY` | NADA API key | Its NADA user needs the **Search index** permission (view and edit) for the metadata extract and the change queue, and **Studies** view on every collection for variables. Never reuse `NADA_ADMIN_API_KEY` here. Used for indexing only: the MCP tools call NADA without it, see the [MCP guide](./mcp.md#what-the-tools-can-see) |
 | `AI4DATA_DISCOVERY_DATA_PATH` | `./data/nada-discovery` | Metadata cache |
 
 ### OpenSearch connection (production)
