@@ -4,7 +4,7 @@ POST /webhooks/catalog receives NADA catalog events and dispatches non-blocking
 background jobs to keep the search index in sync automatically.
 
 Auth: see ``nada_ai.app.auth`` — role ``write`` required (either the legacy
-``NADA_ADMIN_API_KEY`` or a stored key). Issue the calling system a dedicated
+``NADA_AI_ADMIN_KEY`` or a stored key). Issue the calling system a dedicated
 key via ``POST /admin/keys`` with ``role=write`` rather than sharing the
 admin key with an external webhook sender.
 """

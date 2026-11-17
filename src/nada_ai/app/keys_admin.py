@@ -1,6 +1,6 @@
 """Admin endpoints for managing per-caller API keys (role-scoped, revocable).
 
-Auth: role ``admin`` required — either the legacy ``NADA_ADMIN_API_KEY`` or a
+Auth: role ``admin`` required — either ``NADA_AI_ADMIN_KEY`` or a
 stored key with ``role=admin``.
 
 The raw key value is returned exactly once, at creation time. Only its

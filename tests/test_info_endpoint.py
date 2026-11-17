@@ -212,7 +212,7 @@ def test_unreachable_qdrant_is_a_contract_error(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_authentication_errors_use_the_contract_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "secret")
     with _running(monkeypatch, "opensearch", auth_disabled=False, client=_opensearch()) as client:
         missing = client.get("/info")
         wrong = client.get("/info", headers={"X-NADA-Admin-Key": "nope"})
@@ -229,7 +229,7 @@ def test_unconfigured_auth_uses_the_contract_envelope(monkeypatch: pytest.Monkey
     assert response.status_code == 503
     error = ErrorResponse.model_validate(response.json()).error
     assert error.code.value == "backend_unavailable"
-    assert "NADA_ADMIN_API_KEY" in error.message
+    assert "NADA_AI_ADMIN_KEY" in error.message
 
 
 def test_rate_limit_errors_use_the_contract_envelope(monkeypatch: pytest.MonkeyPatch) -> None:

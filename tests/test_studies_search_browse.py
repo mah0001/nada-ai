@@ -482,7 +482,7 @@ def test_no_implemented_modes_means_study_search_is_unsupported(monkeypatch: pyt
 
 
 def test_access_errors_come_before_validation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "secret")
     with _running(monkeypatch, _os(), auth_disabled=False) as client:
         response = _post(client, {"limit": 0})
         ok = _post(client, {}, headers={"X-NADA-Admin-Key": "secret"})

@@ -110,7 +110,7 @@ AI4DATA_METADATA_CATALOG_X_API_KEY=
 # AI4DATA_METADATA_CATALOG_X_API_KEY_HOSTS=training.ihsn.org,files.ihsn.org
 
 # --- Optional admin API auth ---
-# NADA_ADMIN_API_KEY=dev-secret
+# NADA_AI_ADMIN_KEY=dev-secret
 ```
 
 ### Classic catalog (no extract)
@@ -384,8 +384,8 @@ When the API container is up:
 
 ```bash
 # Optional admin auth
-export NADA_ADMIN_API_KEY=dev-secret
-H=(-H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY")
+export NADA_AI_ADMIN_KEY=dev-secret
+H=(-H "X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY")
 
 curl -s "${H[@]}" -X POST http://localhost:8020/admin/index \
   -H 'Content-Type: application/json' -d '{"recreate": false}'
@@ -457,10 +457,10 @@ Run through this after ingest to confirm the pipeline succeeded.
 
    ```bash
    curl -s "http://localhost:8020/admin/docs/YOUR_IDNO" \
-     -H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY"
+     -H "X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY"
    ```
 
-   Omit the admin header if `NADA_ADMIN_API_KEY` is unset.
+   Omit the admin header if `NADA_AI_ADMIN_KEY` is unset.
 
 ---
 

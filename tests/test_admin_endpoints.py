@@ -3,7 +3,7 @@
 The ingest service functions are monkey-patched to no-op coroutines so we don't
 require a live OpenSearch cluster or the embedding model. These tests focus on:
 
-* ``admin_auth`` (gated only when ``NADA_ADMIN_API_KEY`` is set)
+* ``admin_auth`` (gated only when ``NADA_AI_ADMIN_KEY`` is set)
 * HTTP status codes (``202`` on accept, ``409`` on single-flight collision)
 * ``GET /jobs`` and ``GET /jobs/{id}`` reflecting status transitions
 """
@@ -42,7 +42,7 @@ def _fresh_state() -> None:
 
 
 def test_admin_auth_required_when_env_set(monkeypatch):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "secret")
     with TestClient(app) as client:
         _fresh_state()
         r = client.post("/admin/index", json={"recreate": False})
@@ -63,7 +63,7 @@ def test_admin_auth_disabled_lets_every_caller_through(monkeypatch):
 
 
 def test_admin_auth_passes_with_correct_key(monkeypatch):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "secret")
     monkeypatch.setattr(admin_module, "create_index_op", lambda settings, recreate=False: {"index": "x", "dim": 0})
 
     with TestClient(app) as client:
@@ -89,7 +89,7 @@ def test_put_index_template_returns_json(monkeypatch):
 
 
 def test_put_index_template_requires_admin_key_when_configured(monkeypatch):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "secret")
     with TestClient(app) as client:
         _fresh_state()
         r = client.post("/admin/index/template")

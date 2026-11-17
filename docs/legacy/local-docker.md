@@ -13,7 +13,7 @@ Day-to-day commands for the **nada-ai** stack already running locally via Docker
 | API container | `nada-ai-api-qdrant-dev` — port `8020` |
 | Qdrant container | `nada-ai-qdrant-dev` — ports `6333` (HTTP), `6334` (gRPC) |
 | Collection | `nada-metadata` |
-| Admin API key | Not set (`NADA_ADMIN_API_KEY` unset) — admin/ingest routes are open, no `X-NADA-Admin-Key` header needed |
+| Admin API key | Not set (`NADA_AI_ADMIN_KEY` unset) — admin/ingest routes are open, no `X-NADA-Admin-Key` header needed |
 
 ---
 
@@ -44,13 +44,13 @@ mkdir -p data/nada-discovery
 | Variable | When to set it |
 |----------|-----------------|
 | `AI4DATA_METADATA_CATALOG_EXTRACT_PATH` | Leave as `api/admin/search-metadata-extract` for fast bulk ingest (paginates once instead of one request per idno). Comment it out if you don't have an admin key — ingest then falls back to the slower classic per-idno flow, which works anonymously |
-| `NADA_ADMIN_API_KEY` | Locks the API's own `/admin/*` and `/jobs` routes behind an `X-NADA-Admin-Key` header. Unset = those routes are fully open — fine for local dev on `localhost`, not for anything reachable over a network |
+| `NADA_AI_ADMIN_KEY` | Locks the API's own `/admin/*` and `/jobs` routes behind an `X-NADA-Admin-Key` header. Unset = those routes are fully open — fine for local dev on `localhost`, not for anything reachable over a network |
 | `AI4DATA_METADATA_CATALOG_COOKIES` / `AI4DATA_METADATA_CATALOG_AUTH_BEARER` | Alternate/additional catalog auth some NADA instances require instead of, or alongside, the API key |
 | `NADA_EMBEDDING_DEVICE` | `mps` for host-side ingest on Apple Silicon; compose always forces `cpu` inside the container |
 
 ### Where to get the catalog API key
 
-`AI4DATA_METADATA_CATALOG_X_API_KEY` is generated **from the target NADA instance itself** (its admin panel, or whoever administers that instance) — it's an *outbound* credential (nada-ai authenticating to the catalog). It is a different trust boundary from `NADA_ADMIN_API_KEY`, which is *inbound* (callers authenticating to nada-ai) — never reuse the same secret for both; a leak of one would otherwise grant both catalog access and full control of this search index.
+`AI4DATA_METADATA_CATALOG_X_API_KEY` is generated **from the target NADA instance itself** (its admin panel, or whoever administers that instance) — it's an *outbound* credential (nada-ai authenticating to the catalog). It is a different trust boundary from `NADA_AI_ADMIN_KEY`, which is *inbound* (callers authenticating to nada-ai) — never reuse the same secret for both; a leak of one would otherwise grant both catalog access and full control of this search index.
 
 After editing `.env`, recreate the API container so it picks up the change (Qdrant itself doesn't need restarting for a catalog-credential edit):
 
@@ -154,7 +154,7 @@ curl -s http://localhost:6333/collections/nada-metadata | python3 -m json.tool
 
 If every job's `status` flips straight to `failed` with `"error": "ConnectError"` within a second of submitting, `AI4DATA_METADATA_CATALOG_URL` is unreachable from inside the container — almost always because it's set to `http://localhost/...` pointing at a catalog that actually runs on the host Mac. Use `host.docker.internal` instead (see [Populating .env](#populating-env)), then `docker compose -f docker-compose.qdrant.yml up -d --force-recreate nada-ai-api` and resubmit.
 
-> If `NADA_ADMIN_API_KEY` gets set later, add `-H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY"` to every admin/ingest call above.
+> If `NADA_AI_ADMIN_KEY` gets set later, add `-H "X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY"` to every admin/ingest call above.
 
 ### Option 2 — `docker exec` (foreground CLI)
 

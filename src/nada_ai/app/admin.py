@@ -6,7 +6,7 @@ in flight returns the existing job (HTTP 409) rather than starting a duplicate.
 
 Auth: see ``nada_ai.app.auth`` — every route requires a principal with a
 minimum role (``read`` / ``write`` / ``admin``), resolved from either the
-legacy ``NADA_ADMIN_API_KEY`` env var or a per-caller key issued via
+``NADA_AI_ADMIN_KEY`` env var or a per-caller key issued via
 ``POST /admin/keys``. Routes are annotated below with their required role.
 Mutating operations write an entry to the audit trail (``app/audit.py``).
 """

@@ -57,7 +57,7 @@ services:
       # SSL_CERT_FILE: /etc/ssl/certs/custom/wbg-root-ca.pem
       # REQUESTS_CA_BUNDLE: /etc/ssl/certs/custom/wbg-root-ca.pem
       NADA_QUERY_PROMPT: "Instruct: Retrieve texts that help answer the user's query or find related information\nQuery: "
-      # NADA_ADMIN_API_KEY: ${NADA_ADMIN_API_KEY}
+      # NADA_AI_ADMIN_KEY: ${NADA_AI_ADMIN_KEY}
     volumes:
       - ${HOME}/.cache/huggingface:/models/huggingface
       - ${HOME}/.cache/torch/sentence_transformers:/models/sentence_transformers

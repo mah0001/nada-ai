@@ -2,9 +2,8 @@
 
 Two credential sources feed a single :class:`Principal`:
 
-1. The legacy ``NADA_ADMIN_API_KEY`` environment variable — a single
-   super-admin secret, kept for backward compatibility with existing
-   deployments. Always resolves to role ``admin`` and satisfies every
+1. The ``NADA_AI_ADMIN_KEY`` environment variable — nada-ai's master admin key,
+   for the operator and for issuing stored keys (NADA's own key among them). Always resolves to role ``admin`` and satisfies every
    :func:`require_role` check.
 2. The per-caller key store (:mod:`nada_ai.app.keys_store`) — individually
    issued, revocable, role-scoped API keys created via ``POST /admin/keys``.
@@ -32,7 +31,7 @@ from nada_ai.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-ADMIN_API_KEY_ENV = "NADA_ADMIN_API_KEY"
+ADMIN_API_KEY_ENV = "NADA_AI_ADMIN_KEY"
 ADMIN_AUTH_DISABLED_ENV = "NADA_ADMIN_AUTH_DISABLED"
 
 NO_CREDENTIALS_MESSAGE = (
@@ -86,9 +85,9 @@ async def check_auth_config(settings: Settings) -> None:
 
 async def resolve_principal(x_admin_key: str | None, s: AppState) -> Principal | None:
     """Resolve a presented key header to a :class:`Principal`, or ``None`` if invalid."""
-    legacy = os.getenv(ADMIN_API_KEY_ENV)
-    if legacy and hmac.compare_digest(x_admin_key or "", legacy):
-        return Principal(id="env", name="legacy env admin key", role=Role.admin, source="env")
+    env_key = os.getenv(ADMIN_API_KEY_ENV)
+    if env_key and hmac.compare_digest(x_admin_key or "", env_key):
+        return Principal(id="env", name="env admin key", role=Role.admin, source="env")
 
     record = await verify_key(x_admin_key, s.settings)
     if record is not None:

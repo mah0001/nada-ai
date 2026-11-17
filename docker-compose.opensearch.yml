@@ -12,7 +12,7 @@
 #   API         127.0.0.1:${NADA_AI_PORT:-8020}
 #   OpenSearch  127.0.0.1:${OPENSEARCH_PORT:-9200}   (for host-side CLI / curl; the API uses the compose network)
 #
-# Required in .env: NADA_ADMIN_API_KEY (admin routes, /info and /studies/search refuse to answer without a key).
+# Required in .env: NADA_AI_ADMIN_KEY (admin routes, /info and /studies/search refuse to answer without a key).
 #
 # OpenSearch data uses a named volume so the container user (UID 1000) can write without `chown` on a host bind
 # mount. For a host path instead, use `./data/opensearch-data:/usr/share/opensearch/data` and run
@@ -74,7 +74,7 @@ services:
       # SSL_CERT_FILE: /etc/ssl/certs/custom/wbg-root-ca.pem
       # REQUESTS_CA_BUNDLE: /etc/ssl/certs/custom/wbg-root-ca.pem
       NADA_QUERY_PROMPT: "Instruct: Retrieve texts that help answer the user's query or find related information\nQuery: "
-      NADA_ADMIN_API_KEY: ${NADA_ADMIN_API_KEY:?set NADA_ADMIN_API_KEY in .env}
+      NADA_AI_ADMIN_KEY: ${NADA_AI_ADMIN_KEY:?set NADA_AI_ADMIN_KEY in .env}
     volumes:
       - ${HOME}/.cache/huggingface:/models/huggingface
       - ${HOME}/.cache/torch/sentence_transformers:/models/sentence_transformers

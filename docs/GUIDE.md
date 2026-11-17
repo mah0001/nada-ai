@@ -138,7 +138,7 @@ necessarily the catalog you actually want.
 > available? Comment out `AI4DATA_METADATA_CATALOG_EXTRACT_PATH` in `.env` and nada-ai
 > falls back to the classic per-idno flow automatically — no other change needed.
 
-Set `NADA_ADMIN_API_KEY` in `.env` (the OpenSearch compose file refuses to start without it), then bring up a
+Set `NADA_AI_ADMIN_KEY` in `.env` (the OpenSearch compose file refuses to start without it), then bring up a
 local OpenSearch + API stack. The [OpenSearch setup guide](opensearch-setup-guide.md) is the fully worked
 walkthrough, including production clusters, and the [host setup](opensearch-host-setup.md) covers running without
 Docker:
@@ -214,7 +214,7 @@ independently overridable (`NADA_METADATA_EXTRACT_BASE_URL`,
 `AI4DATA_METADATA_CATALOG_URL` when unset) — for the rare case where those admin
 surfaces live at a different host/path than the derivation produces.
 
-> **Trust boundary — don't cross it.** `NADA_ADMIN_API_KEY` is *inbound*: it's what
+> **Trust boundary — don't cross it.** `NADA_AI_ADMIN_KEY` is *inbound*: it's what
 > callers present to authenticate to *this* service. `AI4DATA_METADATA_CATALOG_X_API_KEY`
 > is *outbound*: what this service presents to the configured NADA instance. Never
 > reuse one value for both — leaking one should never grant the other.
@@ -388,7 +388,7 @@ operations as background jobs, for triggering ingestion without shell access:
 # accepts timeseries | indicator | survey | microdata | document | geospatial |
 # timeseriesdb | indicator-db | table | script | image | video.
 curl -X POST localhost:8020/admin/ingest/from-catalog \
-  -H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY" -H 'content-type: application/json' \
+  -H "X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY" -H 'content-type: application/json' \
   -d '{"catalog_type": "document"}'
 
 # Pull + index EVERY catalog type in one call (role: write) — submits one
@@ -400,11 +400,11 @@ curl -X POST localhost:8020/admin/ingest/from-catalog \
 # index/collection once, up front, before any type is indexed (not once per
 # type — that would wipe out whichever type was indexed just before it).
 curl -X POST localhost:8020/admin/ingest/from-catalog/all \
-  -H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY" -H 'content-type: application/json' -d '{}'
+  -H "X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY" -H 'content-type: application/json' -d '{}'
 
 # Targeted batch re-index by NADA internal id (role: write)
 curl -X POST localhost:8020/admin/catalog/index \
-  -H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY" -H 'content-type: application/json' \
+  -H "X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY" -H 'content-type: application/json' \
   -d '{"sids": [516, 517]}'
 ```
 
@@ -700,7 +700,7 @@ Every admin/catalog/facets/webhook/job route (everything under `/admin/*` and
 
 | Source | How | Role |
 |---|---|---|
-| `NADA_ADMIN_API_KEY` | Legacy super-admin key. Checked directly against the environment (not part of `Settings`, deliberately — see the trust-boundary note in [Connecting to NADA](#connecting-to-nada)). Presented as header `X-NADA-Admin-Key`. | `admin` |
+| `NADA_AI_ADMIN_KEY` | nada-ai's master admin key, for the operator and for issuing stored keys (NADA's key among them). Checked directly against the environment (not part of `Settings`, deliberately — see the trust-boundary note in [Connecting to NADA](#connecting-to-nada)). Presented as header `X-NADA-Admin-Key`. | `admin` |
 | Per-caller API keys | Issued via `POST /admin/keys` (`app/keys_admin.py`), stored hashed at `NADA_API_KEYS_PATH` (default `config/api_keys.json`), revocable. | scoped at issuance |
 
 Auth is always on. If **neither** is configured, every protected route answers 503
@@ -713,7 +713,7 @@ A key store file that exists but cannot be read or parsed fails startup, and ans
 
 For local development only, `NADA_ADMIN_AUTH_DISABLED=true` turns auth off: every
 caller is `admin`, logged as an error at startup. The server refuses to start when it
-is set while `NADA_ADMIN_API_KEY` or an active stored key is configured too.
+is set while `NADA_AI_ADMIN_KEY` or an active stored key is configured too.
 
 Every mutating action is recorded to an append-only JSONL audit trail
 (`NADA_AUDIT_LOG_PATH`, default `config/audit.log`), queryable via `GET /admin/audit`.
@@ -808,7 +808,7 @@ in `src/nada_ai/settings.py` unless noted.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `NADA_ADMIN_API_KEY` | unset | Legacy super-admin key (see [Admin API](#admin-api-auth-rbac-audit-rate-limiting)) |
+| `NADA_AI_ADMIN_KEY` | unset | nada-ai's master admin key, sent in `X-NADA-Admin-Key` (inbound; see [Admin API](#admin-api-auth-rbac-audit-rate-limiting)) |
 | `NADA_ADMIN_AUTH_DISABLED` | `false` | Local development only: every caller is admin. Refused at startup together with any credential |
 | `NADA_API_KEYS_PATH` | `config/api_keys.json` | Per-caller API key store (hashed) |
 | `NADA_AUDIT_LOG_PATH` | `config/audit.log` | Append-only JSONL audit trail |
@@ -845,7 +845,7 @@ produces.
 | `AI4DATA_METADATA_CATALOG_EXTRACT_INCLUDE_ADMIN_METADATA` | `true` | Include admin metadata in extract payload |
 | `AI4DATA_METADATA_CATALOG_EXTRACT_INCLUDE_METADATA` | `true` | Include full study metadata |
 | `AI4DATA_METADATA_CATALOG_EXTRACT_FALLBACK_CATALOG_JSON` | `false` | Fall back to classic JSON endpoint if resources are missing |
-| `AI4DATA_METADATA_CATALOG_X_API_KEY` | unset | Outbound API key for catalog calls |
+| `AI4DATA_METADATA_CATALOG_X_API_KEY` | unset | nada-ai's login to NADA (outbound): a NADA user's API key, for indexing |
 | `AI4DATA_METADATA_CATALOG_X_API_KEY_HOSTS` | unset | Extra hostnames allowed to receive the key |
 | `AI4DATA_METADATA_CATALOG_COOKIES` | unset | Cookie string for session-gated PDF downloads |
 | `AI4DATA_METADATA_CATALOG_AUTH_BEARER` | unset | Bearer token for admin extract endpoints |
@@ -893,7 +893,7 @@ process that serves *only* MCP.
 
 | File | What it starts |
 |---|---|
-| `docker-compose.opensearch.yml` | Project `nada-ai-opensearch`: `nada-ai-api` (`127.0.0.1:${NADA_AI_PORT:-8020}`) + `opensearch-nada` (OpenSearch 3.6.0, single-node, security plugin disabled — **dev only**, `127.0.0.1:${OPENSEARCH_PORT:-9200}`). Needs `NADA_ADMIN_API_KEY` in `.env`. |
+| `docker-compose.opensearch.yml` | Project `nada-ai-opensearch`: `nada-ai-api` (`127.0.0.1:${NADA_AI_PORT:-8020}`) + `opensearch-nada` (OpenSearch 3.6.0, single-node, security plugin disabled — **dev only**, `127.0.0.1:${OPENSEARCH_PORT:-9200}`). Needs `NADA_AI_ADMIN_KEY` in `.env`. |
 | `docker-compose.dev.yml` | Overlay: bind-mounts `./src`, sets `PYTHONPATH`, runs uvicorn with `--reload` |
 | `docker-compose.qdrant.yml` | Legacy. Project `nada-ai`: `nada-ai-api` (port `8020`) + `qdrant-nada` (Qdrant v1.18.0). Serves `/search` only; NADA cannot use it |
 

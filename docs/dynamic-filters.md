@@ -40,7 +40,7 @@ uv run python -m nada_ai.filters.cli get --idno=DOC-123
 uv run python -m nada_ai.filters.cli ensure-indexes
 ```
 
-Admin API (when `NADA_ADMIN_API_KEY` is set):
+Admin API (when `NADA_AI_ADMIN_KEY` is set):
 
 - `POST /admin/filters/sync` — body `{records: [{sid, filters}]}`
 - `GET /admin/filters/{sid}`

@@ -228,9 +228,9 @@ NADA_EMBEDDING_BACKEND=local
 NADA_EMBEDDING_MODEL_ID=microsoft/harrier-oss-v1-270m   # or the local folder
 NADA_EMBEDDING_DEVICE=cpu
 
-NADA_ADMIN_API_KEY=<openssl rand -hex 32>
+NADA_AI_ADMIN_KEY=<openssl rand -hex 32>
 AI4DATA_METADATA_CATALOG_URL=https://nada.example.org/index.php
-AI4DATA_METADATA_CATALOG_X_API_KEY=<NADA admin API key>
+AI4DATA_METADATA_CATALOG_X_API_KEY=<API key of a NADA user with the Search index permission>
 AI4DATA_DISCOVERY_DATA_PATH=./data/nada-discovery
 ```
 
@@ -271,7 +271,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now nada-ai
 sudo systemctl status nada-ai
 curl -s http://127.0.0.1:8020/health
-curl -s -X POST http://127.0.0.1:8020/health/embeddings/warmup -H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY"
+curl -s -X POST http://127.0.0.1:8020/health/embeddings/warmup -H "X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY"
 journalctl -u nada-ai -f      # logs
 ```
 

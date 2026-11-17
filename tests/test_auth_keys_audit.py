@@ -46,7 +46,7 @@ def test_unconfigured_server_answers_503_not_anonymous_admin(monkeypatch, tmp_pa
         r = client.get("/jobs")
         with_header = client.get("/jobs", headers={"X-NADA-Admin-Key": "anything"})
     assert r.status_code == with_header.status_code == 503
-    assert "NADA_ADMIN_API_KEY" in r.json()["detail"]
+    assert "NADA_AI_ADMIN_KEY" in r.json()["detail"]
     assert "NADA_ADMIN_AUTH_DISABLED" in r.json()["detail"]
 
 
@@ -66,7 +66,7 @@ def test_auth_disabled_lets_every_caller_through(monkeypatch, tmp_path):
 
 def test_startup_refuses_auth_disabled_with_an_env_key(monkeypatch, tmp_path):
     monkeypatch.setenv("NADA_ADMIN_AUTH_DISABLED", "true")
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "secret")
     _isolate_stores(monkeypatch, tmp_path)
 
     with pytest.raises(RuntimeError, match="NADA_ADMIN_AUTH_DISABLED"), TestClient(app):
@@ -109,7 +109,7 @@ def test_an_unreadable_key_store_answers_503_and_is_never_overwritten(monkeypatc
     """Treating it as "no keys" would open the server (before), or lock out every stored key silently; and creating
     a key would overwrite the file with only the new one."""
     _isolate_stores(monkeypatch, tmp_path)
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     keys_file = tmp_path / "api_keys.json"
     keys_file.write_text('{"keys": []}', encoding="utf-8")  # readable at startup; broken while running
 
@@ -130,7 +130,7 @@ def test_an_unreadable_key_store_answers_503_and_is_never_overwritten(monkeypatc
 def test_startup_fails_on_an_unreadable_key_store(monkeypatch, tmp_path):
     """Also with the env key set, which on its own would never read the store."""
     _isolate_stores(monkeypatch, tmp_path)
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     (tmp_path / "api_keys.json").write_text("{not json", encoding="utf-8")
 
     with pytest.raises(KeyStoreError), TestClient(app):
@@ -138,7 +138,7 @@ def test_startup_fails_on_an_unreadable_key_store(monkeypatch, tmp_path):
 
 
 def test_legacy_env_key_creates_and_scopes_new_keys(monkeypatch, tmp_path):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     _isolate_stores(monkeypatch, tmp_path)
 
     with TestClient(app) as client:
@@ -165,7 +165,7 @@ def test_legacy_env_key_creates_and_scopes_new_keys(monkeypatch, tmp_path):
 
 
 def test_write_role_key_cannot_perform_admin_actions(monkeypatch, tmp_path):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     _isolate_stores(monkeypatch, tmp_path)
 
     with TestClient(app) as client:
@@ -188,7 +188,7 @@ def test_write_role_key_cannot_perform_admin_actions(monkeypatch, tmp_path):
 
 
 def test_invalid_key_rejected(monkeypatch, tmp_path):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     _isolate_stores(monkeypatch, tmp_path)
 
     with TestClient(app) as client:
@@ -200,7 +200,7 @@ def test_invalid_key_rejected(monkeypatch, tmp_path):
 
 
 def test_revoked_key_stops_working(monkeypatch, tmp_path):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     _isolate_stores(monkeypatch, tmp_path)
 
     with TestClient(app) as client:
@@ -221,7 +221,7 @@ def test_revoked_key_stops_working(monkeypatch, tmp_path):
 
 
 def test_revoke_unknown_key_404(monkeypatch, tmp_path):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     _isolate_stores(monkeypatch, tmp_path)
 
     with TestClient(app) as client:
@@ -231,7 +231,7 @@ def test_revoke_unknown_key_404(monkeypatch, tmp_path):
 
 
 def test_audit_trail_records_mutations(monkeypatch, tmp_path):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     _isolate_stores(monkeypatch, tmp_path)
 
     with TestClient(app) as client:
@@ -244,11 +244,11 @@ def test_audit_trail_records_mutations(monkeypatch, tmp_path):
         assert r.status_code == 200
         entries = r.json()["entries"]
         assert any(e["action"] == "key.create" and e["detail"] == "name=audited role=write" for e in entries)
-        assert all(e["principal_name"] == "legacy env admin key" for e in entries)
+        assert all(e["principal_name"] == "env admin key" for e in entries)
 
 
 def test_audit_requires_admin_role(monkeypatch, tmp_path):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "legacy-secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "legacy-secret")
     _isolate_stores(monkeypatch, tmp_path)
 
     with TestClient(app) as client:
@@ -290,7 +290,7 @@ def test_search_rate_limit_enforced(monkeypatch, tmp_path):
     search to reach a live Qdrant and segfault computing a real FastEmbed
     BM25 sparse embedding — a native-extension crash, not a test assertion
     failure, so it took the whole pytest process down with it."""
-    monkeypatch.delenv("NADA_ADMIN_API_KEY", raising=False)
+    monkeypatch.delenv("NADA_AI_ADMIN_KEY", raising=False)
     _isolate_stores(monkeypatch, tmp_path)
 
     with TestClient(app) as client:

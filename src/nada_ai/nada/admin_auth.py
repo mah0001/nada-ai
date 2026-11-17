@@ -19,7 +19,7 @@ overridable — unlike credentials, different path/host structure per surface
 is a real (if rare) possibility, e.g. a nonstandard reverse-proxy route.
 
 Trust-boundary reminder: these are OUTBOUND credentials (nada-ai
-authenticating itself to NADA), never ``NADA_ADMIN_API_KEY`` (INBOUND —
+authenticating itself to NADA), never ``NADA_AI_ADMIN_KEY`` (INBOUND —
 callers authenticating to nada-ai). Never reuse one for the other.
 """
 

@@ -13,7 +13,7 @@ def _fresh_state() -> None:
 
 
 def test_request_id_generated_and_returned(monkeypatch):
-    monkeypatch.delenv("NADA_ADMIN_API_KEY", raising=False)
+    monkeypatch.delenv("NADA_AI_ADMIN_KEY", raising=False)
     with TestClient(app) as client:
         _fresh_state()
         r1 = client.get("/health")
@@ -24,7 +24,7 @@ def test_request_id_generated_and_returned(monkeypatch):
 
 
 def test_request_id_propagated_from_caller(monkeypatch):
-    monkeypatch.delenv("NADA_ADMIN_API_KEY", raising=False)
+    monkeypatch.delenv("NADA_AI_ADMIN_KEY", raising=False)
     with TestClient(app) as client:
         _fresh_state()
         r = client.get("/health", headers={"X-Request-ID": "caller-supplied-id"})
@@ -32,7 +32,7 @@ def test_request_id_propagated_from_caller(monkeypatch):
 
 
 def test_metrics_endpoint_requires_auth(monkeypatch):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "secret")
     with TestClient(app) as client:
         _fresh_state()
         r = client.get("/admin/metrics")
@@ -40,7 +40,7 @@ def test_metrics_endpoint_requires_auth(monkeypatch):
 
 
 def test_metrics_endpoint_records_requests(monkeypatch):
-    monkeypatch.setenv("NADA_ADMIN_API_KEY", "secret")
+    monkeypatch.setenv("NADA_AI_ADMIN_KEY", "secret")
     headers = {"X-NADA-Admin-Key": "secret"}
     with TestClient(app) as client:
         _fresh_state()

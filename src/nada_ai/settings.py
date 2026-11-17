@@ -227,7 +227,7 @@ class Settings(BaseSettings):
 
     #: Turn admin authentication off: every caller of a protected route (``/admin/*``, ``/webhooks/*``, ``/jobs``,
     #: ``/info``, ``/studies/search``) is admin. For local development only; off by default, and the server refuses
-    #: to start when it is on while ``NADA_ADMIN_API_KEY`` or an active stored key is also configured.
+    #: to start when it is on while ``NADA_AI_ADMIN_KEY`` or an active stored key is also configured.
     admin_auth_disabled: bool = Field(default=False)
 
     #: Override path to the API keys store (default ``config/api_keys.json``).

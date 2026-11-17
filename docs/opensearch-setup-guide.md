@@ -108,9 +108,9 @@ mkdir -p data/nada-discovery
 | `NADA_SEARCH_BACKEND` | `opensearch` | The default; set it explicitly anyway |
 | `NADA_OPENSEARCH_URL` | `http://localhost:9200` | The Docker stack overrides this to `http://opensearch-nada:9200` inside the API container |
 | `NADA_INDEX_NAME` | `nada-metadata` | Base name of the four indexes |
-| `NADA_ADMIN_API_KEY` | a long random secret | Auth is always on: without it (or a stored key) `/admin/*`, `/jobs`, `/info` and `/studies/search` answer 503. The OpenSearch compose file refuses to start without it. Generate one with `openssl rand -hex 32` |
+| `NADA_AI_ADMIN_KEY` | a long random secret | nada-ai's master admin key (inbound). You use it to issue NADA's own key in [step 8](#8-connect-nada). Auth is always on: without it (or a stored key) `/admin/*`, `/jobs`, `/info` and `/studies/search` answer 503. The OpenSearch compose file refuses to start without it. Generate one with `openssl rand -hex 32` |
 | `AI4DATA_METADATA_CATALOG_URL` | `https://nada.example.org/index.php` | Your NADA instance. From inside Docker, a NADA on the same machine is `http://host.docker.internal/...`, **not** `http://localhost/...` |
-| `AI4DATA_METADATA_CATALOG_X_API_KEY` | NADA API key | Its NADA user needs the **Search index** permission (view and edit) for the metadata extract and the change queue, and **Studies** view on every collection for variables. Never reuse `NADA_ADMIN_API_KEY` here. Used for indexing only: the MCP tools call NADA without it, see the [MCP guide](./mcp.md#what-the-tools-can-see) |
+| `AI4DATA_METADATA_CATALOG_X_API_KEY` | NADA API key | nada-ai's login to NADA (outbound). Its NADA user needs the **Search index** permission (view and edit) for the metadata extract and the change queue, and **Studies** view on every collection for variables. Never reuse `NADA_AI_ADMIN_KEY` here. Used for indexing only: the MCP tools call NADA without it, see the [MCP guide](./mcp.md#what-the-tools-can-see) |
 | `AI4DATA_DISCOVERY_DATA_PATH` | `./data/nada-discovery` | Metadata cache |
 
 ### OpenSearch connection (production)
@@ -193,7 +193,7 @@ To keep OpenSearch data in a host folder instead of the named volume, mount `./d
 curl -s http://localhost:9200/_cluster/health?pretty            # status green or yellow
 curl -s http://localhost:8020/health                              # API and backend
 curl -s -X POST http://localhost:8020/health/embeddings/warmup \
-  -H "X-NADA-Admin-Key: $NADA_ADMIN_API_KEY"                       # loads Harrier (first call takes a few seconds)
+  -H "X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY"                       # loads Harrier (first call takes a few seconds)
 ```
 
 ### Run the API on the host
@@ -226,7 +226,7 @@ uv run python -m nada_ai.ingest.cli create_index
 Or over HTTP:
 
 ```bash
-H="X-NADA-Admin-Key: $NADA_ADMIN_API_KEY"
+H="X-NADA-Admin-Key: $NADA_AI_ADMIN_KEY"
 curl -s -X POST localhost:8020/admin/index/template -H "$H"
 curl -s -X POST localhost:8020/admin/index -H "$H" -H 'content-type: application/json' -d '{"recreate": false}'
 curl -s localhost:8020/admin/index/mapping -H "$H" | jq '.' | head
@@ -327,7 +327,7 @@ It needs `NADA_REPORT_SEARCH_INDEX_STATE_ENABLED=true` (nada-ai reports what it 
 
 NADA uses one nada-ai key, an **admin** key, for both searches and indexing.
 
-1. Issue an admin key for NADA, so it does not share `NADA_ADMIN_API_KEY`:
+1. Issue an admin key for NADA, so it does not share `NADA_AI_ADMIN_KEY`:
 
    ```bash
    curl -s -X POST localhost:8020/admin/keys -H "$H" -H 'content-type: application/json' \
@@ -434,7 +434,7 @@ Do **not** use `docker-compose.opensearch.yml` in production as is: security is 
   always possible, but takes hours on a full catalog.
 - **The API.** Run one uvicorn worker (the ingest gate and job registry are per process) behind a reverse proxy with
   HTTPS. Keep `./config` (or `/workspace/config` in Docker) on persistent storage: it holds the API keys and audit log.
-- **Secrets.** `chmod 600 .env`. Use different values for `NADA_ADMIN_API_KEY`, the NADA keys and
+- **Secrets.** `chmod 600 .env`. Use different values for `NADA_AI_ADMIN_KEY`, the NADA keys and
   `AI4DATA_METADATA_CATALOG_X_API_KEY`.
 
 ### Secured OpenSearch cluster
@@ -479,7 +479,7 @@ Size the heap at half the host's RAM, at most about 31 GB, and set `vm.max_map_c
 | Writes fail with `cluster_block_exception` / `read_only_allow_delete` | Disk watermark hit. Free disk, then `PUT nada-metadata*/_settings {"index.blocks.read_only_allow_delete": null}` |
 | Ingest jobs fail at once with `ConnectError` | `AI4DATA_METADATA_CATALOG_URL` uses `localhost` from inside Docker. Use `host.docker.internal` |
 | Host-side CLI fails with `NadaUnavailable` / `nodename nor servname provided` | The reverse case: `.env` says `host.docker.internal`, which resolves only inside Docker. Run the command in the container (`docker exec nada-ai-api-opensearch-dev python -m nada_ai.ingest.cli ...`), or prefix it with `AI4DATA_METADATA_CATALOG_URL=http://localhost/...` |
-| `/admin/*`, `/info` or `/studies/search` answer 503 | No `NADA_ADMIN_API_KEY` and no stored key |
+| `/admin/*`, `/info` or `/studies/search` answer 503 | No `NADA_AI_ADMIN_KEY` and no stored key |
 | Index creation fails on embedding dimension | The existing chunk index was built with another model. Recreate it |
 | API hangs on first search or warmup in Docker | Model not in `~/.cache/huggingface` on the host (the container is offline), or corporate TLS. Download it on the host first |
 | Study search answers `index_not_ready` | The study index is empty after a recreate. Index again or requeue from NADA |

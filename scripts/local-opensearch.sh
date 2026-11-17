@@ -63,7 +63,7 @@ nada_ai_env() {
   export NADA_REPORT_SEARCH_INDEX_STATE_ENABLED="${NADA_REPORT_SEARCH_INDEX_STATE_ENABLED:-false}"
   export NADA_RECONCILE_SEARCH_INDEX_ENABLED=false
   # The API is bound to loopback below, so admin auth can be disabled for this local development process.
-  unset NADA_ADMIN_API_KEY
+  unset NADA_AI_ADMIN_KEY
   export NADA_ADMIN_AUTH_DISABLED=true
   # Requests per minute per caller; 0 disables rate limiting (the default, see .env.example).
   export NADA_RATE_LIMIT_SEARCH_PER_MINUTE="${NADA_RATE_LIMIT_SEARCH_PER_MINUTE:-0}"

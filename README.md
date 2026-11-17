@@ -18,7 +18,7 @@ Metadata is read from NADA through [`ai4data.discovery`](https://github.com/mah0
 ```bash
 git clone https://github.com/mah0001/nada-ai.git
 cd nada-ai
-cp .env.example .env        # set NADA_ADMIN_API_KEY, the NADA URL and NADA API key
+cp .env.example .env        # set NADA_AI_ADMIN_KEY, the NADA URL and NADA API key
 docker compose -f docker-compose.opensearch.yml up --build -d
 curl -s http://localhost:8020/health
 ```
