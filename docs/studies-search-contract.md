@@ -44,8 +44,8 @@ Describes the running engine. Example: `info_opensearch.json`, `info_qdrant.json
 | `limits` | `max_limit`, `max_offset`, `semantic_window`, `max_query_length`; null when `studies_search` is false |
 | `index` | `name`, `generation` (changes when the index is rebuilt or the engine switched), `studies` (distinct studies), `embedding_model`, `embedding_dim` |
 
-Phase 1: OpenSearch reports `studies_search: true`; Qdrant reports `studies_search: false` and NADA keeps using the
-legacy `POST /search` path for it.
+OpenSearch reports `studies_search: true`. Qdrant reports `studies_search: false`, and NADA refuses a nada-ai that
+does not run OpenSearch.
 
 ## 4. `POST /studies/search` request
 

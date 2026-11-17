@@ -50,8 +50,9 @@ every catalog/instance-specific value (base URL, credentials, extract path) is
 configuration, so `nada-ai` works against any NADA instance — IHSN's Data Compass is
 just the reference instance used in examples throughout this guide.
 
-1. **Semantic search** — a FastAPI service that indexes catalog metadata into a vector
-   store (OpenSearch or Qdrant) and serves keyword / vector / hybrid search over it,
+1. **Semantic search** — a FastAPI service that indexes catalog metadata into
+   OpenSearch and serves keyword / vector / hybrid search over it, including the
+   study, variable and citation searches NADA's catalog uses,
    with dynamic facet filtering, recommendations, and admin tooling for ingest and
    index management.
 2. **MCP server** — a [Model Context Protocol](https://modelcontextprotocol.io) server
@@ -70,7 +71,7 @@ flowchart LR
 
     subgraph nada-ai
         ingest["ingest pipeline<br/>(src/nada_ai/ingest)"]
-        search["search backend<br/>(OpenSearch or Qdrant)"]
+        search["OpenSearch<br/>(studies, variables, citations, chunks)"]
         api["FastAPI app<br/>/search /admin /health"]
         mcp["MCP server<br/>mounted at /mcp"]
     end
@@ -79,10 +80,10 @@ flowchart LR
     client_http["HTTP client<br/>(search UI, scripts)"]
 
     NADA -- "catalog + timeseries data" --> ingest
-    NADA -- "catalog + timeseries data" --> mcp
+    NADA -- "catalog search, metadata, timeseries data" --> mcp
+    NADA -- "catalog search requests" --> api
     ingest -- "bulk index" --> search
     search --> api
-    api --> mcp
     client_http --> api
     client_llm -- "tools / apps / prompts" --> mcp
 ```
@@ -111,7 +112,7 @@ and network access to a NADA catalog (defaults to the public Data
 Compass instance if you don't set one — see below).
 
 ```bash
-git clone <this repo> && cd nada-ai
+git clone https://github.com/mah0001/nada-ai.git && cd nada-ai
 cp .env.example .env
 uv sync --extra local
 ```
@@ -131,9 +132,9 @@ necessarily the catalog you actually want.
 > enables NADA's bulk `search-metadata-extract` API by default
 > (`AI4DATA_METADATA_CATALOG_EXTRACT_PATH`) — a full-catalog `index_from_catalog` run
 > does ~N/100 HTTP calls instead of ~N, and filter/facet sync comes along for free on
-> the same fetch (see [Ingestion](#ingestion)). This endpoint is admin-only, so set
+> the same fetch (see [Ingestion](#ingestion)). This endpoint needs NADA's Search index permission, so set
 > `AI4DATA_METADATA_CATALOG_X_API_KEY` (or `_AUTH_BEARER`/`_COOKIES`) in `.env` to an
-> admin-capable credential for your target NADA instance. No admin credential
+> credential whose NADA user has that permission (or a site admin). No such credential
 > available? Comment out `AI4DATA_METADATA_CATALOG_EXTRACT_PATH` in `.env` and nada-ai
 > falls back to the classic per-idno flow automatically — no other change needed.
 
@@ -165,23 +166,15 @@ Or open [http://localhost:8020/demo](http://localhost:8020/demo) in a browser �
 minimal built-in UI over the same `/search` endpoint (see
 [The REST search API](#the-rest-search-api)), no curl required.
 
-Point an MCP client at `http://localhost:8020/mcp` (streamable HTTP), or run the
-standalone MCP server:
+Point an MCP client at `http://localhost:8020/mcp` (streamable HTTP; see the
+[MCP guide](mcp.md) for client setup), or run the standalone MCP server:
 
 ```bash
 uv run python -m nada_ai.mcp_server --port 8025
 ```
 
-Prefer Qdrant instead of OpenSearch (the default)? Same shape, different compose file
-(it sets `NADA_SEARCH_BACKEND=qdrant` itself; install the `qdrant` extra with
-`uv sync --extra local --extra qdrant` for host-side CLI use):
-
-```bash
-docker compose -f docker-compose.qdrant.yml -f docker-compose.dev.yml up --build -d
-```
-
-See the [Qdrant pipeline guide](qdrant-pipeline-guide.md), and [Compose files](#compose-files) for running both
-stacks side by side.
+Qdrant is still available for the `/search` endpoint only; NADA's catalog search needs OpenSearch. See
+[Compose files](#compose-files) and the [legacy Qdrant guides](legacy/).
 
 ---
 
@@ -229,8 +222,8 @@ surfaces live at a different host/path than the derivation produces.
 To point at a different NADA instance, set `AI4DATA_METADATA_CATALOG_URL`.
 `.env.example` enables the bulk `search-metadata-extract` endpoint
 (`AI4DATA_METADATA_CATALOG_EXTRACT_PATH`) by default — substantially faster for large
-catalogs than the classic search + per-idno JSON flow — but it's admin-only, so it
-needs an admin-capable credential for the target instance (see
+catalogs than the classic search + per-idno JSON flow — but it needs a credential whose
+NADA user has the Search index permission (see
 [Quickstart](#quickstart)). Comment the setting out to fall back to the classic flow
 against an instance where you only have anonymous/read access.
 
@@ -255,8 +248,8 @@ operational.
 | Best for | NADA deployments, development and production | `/search` and MCP-only setups, native sparse+dense hybrid |
 
 Setup: [OpenSearch setup guide](opensearch-setup-guide.md) (Docker, production, embedding options),
-[OpenSearch host setup](opensearch-host-setup.md) (no Docker), and the
-[Qdrant pipeline guide](qdrant-pipeline-guide.md).
+[OpenSearch host setup](opensearch-host-setup.md) (no Docker). For a NADA deployment, use OpenSearch. The
+[legacy Qdrant guides](legacy/) cover the other backend.
 
 ### Embeddings
 
@@ -318,10 +311,14 @@ instance's metadata-extract API into the index under `metadata.filter_fields` �
 
 | Route | Purpose |
 |---|---|
+| `POST /studies/search` | NADA's study search: order, counts, tab counts, facets ([contract](studies-search-contract.md)). OpenSearch only |
+| `POST /variables/search` | NADA's variable search ([contract](variables-search-contract.md)). OpenSearch only |
+| `POST /citations/search` | NADA's citation search ([contract](citations-search-contract.md)). OpenSearch only |
+| `GET /info` | Engine, capabilities and index details. NADA reads it to decide which searches nada-ai serves |
 | `POST /search` | Keyword/vector/hybrid search with filters, facets, pagination |
 | `POST /recommendations` | "More like this" via chunk-embedding fusion (`search/vector_fusion.py`) |
 | `POST /search/explain` | Non-LLM explanation of why a result matched a filter (`search/explain_filters.py`) |
-| `GET /health`, `/ready` | Liveness/readiness, including MCP dependency probing when `NADA_MCP_READINESS_ENABLED=true` |
+| `GET /health` | Backend, index and sync scheduler health (`ok` or `degraded`). `GET /health/embeddings` reports the embedding model |
 | `GET /demo` | Minimal built-in browser UI that posts to `POST /search` — a query box, mode/filter controls, and results tabbed by data type. The fastest way to sanity-check a fresh ingest without writing curl — open it right after `index_from_catalog` completes. |
 
 Admin/ingest/catalog-management routes are covered in
@@ -361,8 +358,8 @@ idno when a study is deleted and created again, and some idnos cannot travel in 
 A study's full record is fetched from NADA's metadata-extract API by its internal id
 (`search-metadata-extract/studies?sids=`), or paged from the catalog in id order
 (`studies?offset=&limit=`), and handed to ai4data's handler as is: nothing is fetched
-or cached by idno (`ingest/study_sources.py`). The extract API is admin-only (requires
-`AI4DATA_METADATA_CATALOG_X_API_KEY`/`_AUTH_BEARER`/`_COOKIES` for an admin-capable
+or cached by idno (`ingest/study_sources.py`). The extract API needs NADA's Search index permission (requires
+`AI4DATA_METADATA_CATALOG_X_API_KEY`/`_AUTH_BEARER`/`_COOKIES` for a suitable
 account on the target instance) and `AI4DATA_METADATA_CATALOG_EXTRACT_PATH` must be set.
 
 ### Running ingestion
@@ -547,8 +544,9 @@ uv run python -m nada_ai.ingest.cli reconcile_search_index --limit=50   # one pa
 `reconcile_search_index` refuses to run while the scheduler holds its lock, so the two never work the queue at the
 same time.
 
-The scheduler needs two things on NADA's side: an admin-capable credential (`AI4DATA_METADATA_CATALOG_X_API_KEY`, the
-same one everything else uses), and NADA's search-index tracking pointed at this deployment (check with
+The scheduler needs two things on NADA's side: a credential whose NADA user has the Search index permission
+(`AI4DATA_METADATA_CATALOG_X_API_KEY`, the same one everything else uses), and NADA's **Index kept in sync** setting
+(`search_index_engine`) set to NADA-AI (check with
 `search_index_status`). While `tracking_enabled` is `false`, the scheduler reports `not_tracking` and checks again
 every `NADA_RECONCILE_SEARCH_INDEX_NOT_TRACKING_INTERVAL_SECONDS`.
 
@@ -574,6 +572,16 @@ The MCP server exposes catalog search and timeseries analytics for LLM agents vi
 **interactive apps** (rich UI widgets a client can render), **resources** (static
 reference documents), and **prompts** (user-invoked slash commands).
 
+For running, exposing and connecting clients, see the [MCP guide](mcp.md). This
+section covers the internals.
+
+**Where the data comes from.** The MCP tools do not query nada-ai's OpenSearch index.
+They call NADA's public API (`GET /api/catalog/search`, `/api/catalog/{idno}`,
+`/api/timeseries/data/{idno}`) with nada-ai's NADA credential. Search results are
+semantic only when NADA's own search engine is set to nada-ai, because NADA then
+sends its catalog search back to nada-ai. The MCP server therefore works the same on
+any search backend.
+
 All tool names are prefixed by `NADA_MCP_TOOL_PREFIX` (default `nada`), and are
 annotated `readOnlyHint: true, destructiveHint: false, idempotentHint: true,
 openWorldHint: true` — every tool in this server only reads from the catalog, never
@@ -588,7 +596,7 @@ vary per DSD (Data Structure Definition), so nothing here can be hardcoded.
 
 | Tool | Purpose |
 |---|---|
-| `nada_search_catalog` | **Step 1.** Search the catalog by keywords + filters (type, year, country, topic, tag, region, data_class, ...) → returns `idno`s |
+| `nada_search_catalog` | **Step 1.** Search the catalog by keywords + filters (type, year, country, topic, tag, region, data_class, ...) → returns `idno`s. `type` defaults to `timeseries` |
 | `nada_get_metadata` | **Step 2.** Full metadata for one `idno` (definition, methodology, abstract) |
 | `nada_get_schema` | DSD schema for a timeseries `idno` — column names/roles, codelists, time format, year bounds. **Prerequisite for every tool below.** |
 | `nada_get_codelist` | Distinct code/label pairs for one DSD component |
@@ -669,8 +677,17 @@ uv run uvicorn nada_ai.app.main:app --host 0.0.0.0 --port 8020
 # → MCP endpoint at http://localhost:8020/mcp
 ```
 
-The shipped Docker image always runs the mounted form — `/mcp` and `/search` share a
-process, a port, and startup/readiness checks.
+The shipped Docker image always runs the mounted form: `/mcp` and `/search` share a
+process and a port.
+
+**Sessions.** The standalone server always runs stateless HTTP. The mounted `/mcp`
+keeps per-client sessions in memory unless `FASTMCP_STATELESS_HTTP=true` is set.
+Set it whenever a reverse proxy or more than one process sits in front of `/mcp`,
+since a session held by one process is unknown to another.
+
+**No authentication and no rate limit.** `/mcp` accepts any caller, and
+`NADA_RATE_LIMIT_SEARCH_PER_MINUTE` does not apply to it. Restrict it at the proxy or
+keep it on a private network; see the [MCP guide](mcp.md#security).
 
 ---
 
@@ -848,8 +865,8 @@ produces.
 | `NADA_MCP_TOOL_PREFIX` | `nada` | Prefix for every tool name (lowercase/digits/underscore) |
 | `NADA_MCP_CATALOG_NAME` | `NADA catalog` | Catalog label used in default tool descriptions |
 | `NADA_MCP_SEARCH_CATALOG_DESCRIPTION` / `NADA_MCP_GET_METADATA_DESCRIPTION` | unset | Full description overrides |
-| `NADA_MCP_READINESS_ENABLED` | `true` | Enable `GET /ready` dependency probing |
-| `NADA_MCP_HEALTH_CHECK_TIMEOUT` | `5.0` | Per-dependency probe timeout (seconds) |
+| `NADA_MCP_READINESS_ENABLED` | `true` | Not used yet (no readiness route exists) |
+| `NADA_MCP_HEALTH_CHECK_TIMEOUT` | `5.0` | Not used yet |
 
 ---
 
@@ -876,22 +893,17 @@ process that serves *only* MCP.
 | File | What it starts |
 |---|---|
 | `docker-compose.opensearch.yml` | Project `nada-ai-opensearch`: `nada-ai-api` (`127.0.0.1:${NADA_AI_PORT:-8020}`) + `opensearch-nada` (OpenSearch 3.6.0, single-node, security plugin disabled — **dev only**, `127.0.0.1:${OPENSEARCH_PORT:-9200}`). Needs `NADA_ADMIN_API_KEY` in `.env`. |
-| `docker-compose.qdrant.yml` | Project `nada-ai`: `nada-ai-api` (port `8020`) + `qdrant-nada` (Qdrant v1.18.0, ports `6333`/HTTP, `6334`/gRPC) |
-| `docker-compose.dev.yml` | Overlay for either file: bind-mounts `./src`, sets `PYTHONPATH`, runs uvicorn with `--reload` |
+| `docker-compose.dev.yml` | Overlay: bind-mounts `./src`, sets `PYTHONPATH`, runs uvicorn with `--reload` |
+| `docker-compose.qdrant.yml` | Legacy. Project `nada-ai`: `nada-ai-api` (port `8020`) + `qdrant-nada` (Qdrant v1.18.0). Serves `/search` only; NADA cannot use it |
 
-Each backend compose file is one engine: the API runs the engine its file sets (`NADA_SEARCH_BACKEND` in its
-`environment:` block, which `.env` cannot override). The two are separate Compose projects with their own containers,
-images and volumes, so starting one never replaces the other; to run both at once, give the OpenSearch stack another
-API port (`NADA_AI_PORT`). Their API settings (embedding, query prompt, model cache) are kept the same on purpose —
-change both files together. Each engine has its own index: index the catalog after switching to an engine that has
-not been indexed, and set NADA's search engine to match (NADA refuses a nada-ai that runs another engine).
+The API runs the engine its compose file sets (`NADA_SEARCH_BACKEND` in its `environment:` block, which `.env` cannot
+override). NADA checks the engine through `/info` and refuses a nada-ai that does not run OpenSearch. The Qdrant file
+is a separate Compose project; to run it beside the OpenSearch stack, give one of them another API port
+(`NADA_AI_PORT`).
 
 ```bash
-# OpenSearch backend, hot-reload dev
+# OpenSearch, hot-reload dev
 docker compose -f docker-compose.opensearch.yml -f docker-compose.dev.yml up --build -d
-
-# Qdrant backend, hot-reload dev
-docker compose -f docker-compose.qdrant.yml -f docker-compose.dev.yml up --build -d
 ```
 
 For a production-like run, drop the `docker-compose.dev.yml` overlay and let the
@@ -901,19 +913,22 @@ still runs OpenSearch without security; for production clusters see
 
 ### TLS / corporate proxies
 
-`certs/` is a git-ignored drop location for a corporate root CA export (e.g.
-`certs/wbg-root-ca.pem`). If the container hits
-`SSL: CERTIFICATE_VERIFY_FAILED` talking to a corporate-proxied catalog host, see
-`certs/README.md` and the commented `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` env vars in
-`docker-compose.qdrant.yml`, and the
-[Qdrant pipeline guide's TLS section](qdrant-pipeline-guide.md#tls-and-corporate-proxies).
+`certs/` is a git-ignored drop location for an organisation's root CA export. If the
+container fails with `SSL: CERTIFICATE_VERIFY_FAILED` talking to the NADA host or
+Hugging Face, see [`certs/README.md`](../certs/README.md): mount the PEM and set
+`SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` (commented examples are in
+`docker-compose.opensearch.yml`). On the host, `ai4data` uses `truststore`, so Python
+trusts the operating system's certificate store.
 
 ### Health checks
 
-`GET /health` is a plain liveness check. `GET /ready` additionally probes
-dependencies (search backend reachability, and MCP dependencies when
-`NADA_MCP_READINESS_ENABLED=true`) — use it for orchestrator readiness gates, not
-`/health`.
+`GET /health` returns `ok` or `degraded` with the backend, whether the index exists,
+indexes whose mapping is outdated, and the sync scheduler's state. It is degraded when
+an index is missing or outdated, or when the scheduler has crashed or stalled. Use it
+for monitoring and orchestrator checks. `GET /health/embeddings` reports the embedding model, and
+`POST /health/embeddings/warmup` (admin) loads it. There is no separate readiness
+route: `NADA_MCP_READINESS_ENABLED` and `NADA_MCP_HEALTH_CHECK_TIMEOUT` are defined
+but not used yet.
 
 ---
 
@@ -1032,6 +1047,6 @@ src/nada_ai/
 
 For the fully worked OpenSearch setup (local Docker stack, production clusters, embedding
 options, connecting NADA), see the [OpenSearch setup guide](opensearch-setup-guide.md) and,
-without Docker, the [OpenSearch host setup](opensearch-host-setup.md). For Qdrant, see
-the [Qdrant pipeline guide](qdrant-pipeline-guide.md). For the facet-filter sync
+without Docker, the [OpenSearch host setup](opensearch-host-setup.md). For the MCP server,
+see the [MCP guide](mcp.md). For the facet-filter sync
 story, see [Dynamic filters](dynamic-filters.md).

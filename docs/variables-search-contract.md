@@ -7,9 +7,9 @@ Models: `src/nada_ai/app/variables_schemas.py`. Backend: `src/nada_ai/search/bac
 
 ## 1. Why this is separate from the study search, and smaller
 
-Variable search predates this project: every semantic study-search driver (`opensearch`, `qdrant_db`, `qdrant`)
-already falls through to NADA's own database search for it (`Catalog_search_semantic_base.php::vsearch`/
-`v_quick_search`), so there was no outage or missing feature to fix — only a lower-quality keyword match to improve.
+Variable search predates this project: NADA's earlier semantic study-search drivers (since removed) all fell through
+to NADA's own database search for it, so there was no outage or missing feature to fix — only a lower-quality keyword
+match to improve.
 Given that, and given the size of the ranking work the study search took (RRF fusion, semantic bounding, field-weight
 tuning, an eval harness), the deliberate scope decision here was:
 

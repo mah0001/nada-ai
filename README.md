@@ -1,56 +1,84 @@
 # nada-ai (`nada_ai`)
 
-Python package for **NADA AI**: ingest [NADA / Data Compass–style](https://data-compass.ihsn.org/) metadata via **`ai4data.discovery`**, search it (keyword, k-NN vector, hybrid) over **OpenSearch or Qdrant**, and expose catalog search + timeseries analytics to LLM agents via an **MCP server** (17 tools, 15 interactive apps, resources, prompts).
+**nada-ai** is the search service for [NADA](https://github.com/ihsn/nada) catalogs. It runs next to NADA and gives it:
 
-**New here? Read the [developer guide](docs/GUIDE.md)** — architecture, semantic search, ingestion, the MCP server, NADA connectivity, every config variable, deployment, and observability, all in one place. This README only covers install and a pointer to the guides; it does not duplicate command sequences that could drift out of sync with them.
+- **Catalog search on OpenSearch**: keyword, semantic and hybrid search over studies, variables and citations, with
+  facets and paging. NADA sends its catalog searches to nada-ai and keeps nada-ai's indexes in sync with catalog
+  changes.
+- **An MCP server** at `/mcp`: catalog search, metadata and timeseries analytics as tools, interactive apps, resources
+  and prompts for LLM clients such as Claude. See the [MCP guide](docs/mcp.md).
 
-## Requirements
+Metadata is read from NADA through [`ai4data.discovery`](https://github.com/mah0001/ai4data).
 
-- Python **3.11+**
-- [**uv**](https://docs.astral.sh/uv/) recommended
-- **`ai4data[discovery]`** is pinned to a git revision in **`[tool.uv.sources]`** for reproducible installs and support for the catalog types used by this package. Update the revision in `pyproject.toml` and run **`uv lock`** to upgrade it. To develop against a local checkout, temporarily override the source with a path dependency.
-- **Docker** (for a local OpenSearch or Qdrant instance; optional, see the [host setup](docs/opensearch-host-setup.md)) — on macOS with Docker Desktop, the `docker` CLI lives at `~/.docker/bin/docker` and is only on `PATH` in a **login shell**; a plain non-login shell (some editor/CI task runners) may need `export PATH="$HOME/.docker/bin:$PATH"` first.
+> **Repository.** NADA's documentation points to this repository, `https://github.com/mah0001/nada-ai`. It receives
+> changes first. The original project is [avsolatorio/nada-ai](https://github.com/avsolatorio/nada-ai).
 
-## Install
-
-From this directory:
+## Quick start with Docker
 
 ```bash
+git clone https://github.com/mah0001/nada-ai.git
 cd nada-ai
-uv sync --all-groups
-# Local SentenceTransformer embeddings (default search/ingest path):
-uv sync --extra local
+cp .env.example .env        # set NADA_ADMIN_API_KEY, the NADA URL and NADA API key
+docker compose -f docker-compose.opensearch.yml up --build -d
+curl -s http://localhost:8020/health
 ```
 
-For **OpenSearch** (the default backend) nothing more is needed: `opensearch-py` is a core dependency.
+This compose file is for development: OpenSearch runs without security and both ports listen on `127.0.0.1` only.
+The [OpenSearch setup guide](docs/opensearch-setup-guide.md) walks through the whole install: `.env`, the embedding
+model, creating the indexes, the first full index, keeping it in sync, connecting NADA, and production.
 
-For **Qdrant** (the alternative backend):
+## Connecting NADA
+
+In NADA, open **Site configurations > Search**:
+
+| NADA setting | Value |
+|---|---|
+| NADA-AI API URL (`nada_ai_url`) | The URL NADA's server can reach nada-ai on, e.g. `http://127.0.0.1:8020` |
+| NADA-AI API Key (`nada_ai_api_key`) | A nada-ai **admin** key. NADA uses it for searches and for indexing |
+| Index kept in sync (`search_index_engine`) | `NADA-AI` |
+| Search engine (`search_engine`) | `NADA-AI`, once the first full index is done |
+
+nada-ai reads from NADA with a NADA API key (`AI4DATA_METADATA_CATALOG_X_API_KEY`) whose user has the **Search
+index** permission (view and edit) and **Studies** view. Details:
+[NADA search engine settings](docs/nada-search-engine-settings.md).
+
+## Install without Docker
+
+Requirements: Python **3.11+** and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync --extra local --extra qdrant
+uv sync --extra local          # local embedding model (default)
 ```
 
-Then follow the **[OpenSearch setup guide](docs/opensearch-setup-guide.md)** for `.env`, bringing up the stack, indexing and connecting NADA, or the [developer guide's Quickstart](docs/GUIDE.md#quickstart) for a shorter tour.
+To run OpenSearch and the API as system services on Linux, follow the
+[OpenSearch host setup](docs/opensearch-host-setup.md).
 
 ## Guides
 
-| Guide | Description |
-|-------|-------------|
-| **[Developer guide](docs/GUIDE.md)** | Full reference: architecture, semantic search, ingestion, the MCP server (tools/apps/resources/prompts), NADA connectivity, every config variable, deployment, observability |
-| **[OpenSearch setup guide](docs/opensearch-setup-guide.md)** | Install, configure and index with OpenSearch (default backend): local Docker stack, self-hosted production cluster, embedding options, connecting NADA, troubleshooting |
-| [OpenSearch host setup](docs/opensearch-host-setup.md) | OpenSearch and the API as system services on Linux, without Docker |
-| [Qdrant pipeline guide](docs/qdrant-pipeline-guide.md) | End-to-end catalog ingest and search with Qdrant (alternative backend): host ingest and full Docker setups |
-| [Dynamic filters](docs/dynamic-filters.md) | Sync catalog filters from a NADA instance's metadata-extract API into the index and search by facet keys |
+| Guide | For |
+|---|---|
+| [OpenSearch setup guide](docs/opensearch-setup-guide.md) | Installing, indexing, connecting NADA, production, troubleshooting |
+| [OpenSearch host setup](docs/opensearch-host-setup.md) | Linux install without Docker, systemd, reverse proxy |
+| [NADA search engine settings](docs/nada-search-engine-settings.md) | NADA's search settings, fallbacks and change tracking |
+| [MCP guide](docs/mcp.md) | Running, exposing and connecting the MCP server |
+| [Developer guide](docs/GUIDE.md) | Architecture, ingestion, search internals, every configuration variable, testing |
+| [Architecture](docs/architecture.md) | How ingest, embeddings, OpenSearch and NADA fit together |
+| [Dynamic filters](docs/dynamic-filters.md) | Catalog filters and facets |
+
+API contracts NADA relies on: [studies](docs/studies-search-contract.md), [variables](docs/variables-search-contract.md),
+[citations](docs/citations-search-contract.md), [study facets](docs/studies-search-facets.md).
+
+## Other search backends
+
+OpenSearch is the engine NADA uses. nada-ai can also run on **Qdrant**, but only its own `/search` endpoint works
+there: NADA's study, variable and citation searches need OpenSearch. Older Qdrant guides are kept in
+[docs/legacy](docs/legacy/).
 
 ## Configuration
 
-Settings use the **`NADA_`** prefix (see `nada_ai.settings`) for nada-ai's own config, and **`AI4DATA_`** for the `ai4data.discovery` package's catalog/credential config — both documented together in **[`.env.example`](.env.example)**, the authoritative, fully-commented list of every variable. Copy it to `.env` and edit:
-
-```bash
-cp .env.example .env
-```
-
-The two values you'll actually need to fill in for a non-default NADA instance are `AI4DATA_METADATA_CATALOG_URL` and `AI4DATA_METADATA_CATALOG_X_API_KEY` — see [Connecting to NADA](docs/GUIDE.md#connecting-to-nada) and the [full configuration reference](docs/GUIDE.md#configuration-reference) in the developer guide.
+Settings use the **`NADA_`** prefix for nada-ai, **`NADA_MCP_`** for the MCP server and **`AI4DATA_`** for the NADA
+connection. [`.env.example`](.env.example) lists every variable with comments; the
+[configuration reference](docs/GUIDE.md#configuration-reference) explains them.
 
 ## Tests
 
@@ -58,4 +86,5 @@ The two values you'll actually need to fill in for a non-default NADA instance a
 uv run pytest -q
 ```
 
-Integration tests against a live backend/catalog are gated behind env flags (`@pytest.mark.integration`) and skip cleanly without them — see [Testing](docs/GUIDE.md#testing) in the developer guide for the full list and how to run each one.
+Integration tests against a live backend or catalog are gated behind env flags and skip without them. See
+[Testing](docs/GUIDE.md#testing).

@@ -1,156 +1,130 @@
-# Architecture: ingest, embeddings, and Qdrant
+# Architecture
 
-How catalog ingest, local embedding models, Qdrant, and the search API fit together.
+How nada-ai reads a NADA catalog, builds its OpenSearch indexes, keeps them in sync, and answers NADA's searches.
 
-**Qdrant does not run the model.** It only stores vectors and compares them (kNN / sparse / hybrid). Harrier and BM25 run inside **nada-ai** (ingest CLI or the FastAPI process). Hugging Face is only the download source for those weights.
+For installing and running it, see the [OpenSearch setup guide](./opensearch-setup-guide.md). For the MCP server, see
+the [MCP guide](./mcp.md).
 
-For install, Docker, and catalog ingest commands, see [qdrant-pipeline-guide.md](./qdrant-pipeline-guide.md).
-
----
-
-## End-to-end
+## End to end
 
 ```mermaid
 flowchart LR
-  catalog["NADA catalog<br/>extract or classic API"]
-  ai4data["ai4data.discovery<br/>MetadataLoader → langdocs"]
-  ingest["nada-ai ingest"]
-  harrier["Harrier 270m<br/>dense embed"]
-  bm25["FastEmbed BM25<br/>sparse embed"]
-  qdrant["Qdrant collection<br/>store + kNN"]
-  api["FastAPI :8020"]
-  client["GET /demo · POST /search"]
+    subgraph NADA
+      extract["metadata-extract API"]
+      queue["search-index queue + state"]
+      catalog["catalog search page"]
+      dash["Search index page"]
+    end
+    subgraph nada-ai
+      ingest["ingest + sync jobs"]
+      model["embedding model<br/>(Harrier, in process)"]
+      api["FastAPI :8020"]
+    end
+    os[("OpenSearch<br/>4 indexes")]
 
-  catalog --> ai4data --> ingest
-  ingest --> harrier --> qdrant
-  ingest --> bm25 --> qdrant
-  client --> api
-  api --> harrier
-  api --> bm25
-  api --> qdrant
-  qdrant --> api --> client
+    extract -->|"studies, variables, citations by sid"| ingest
+    queue -->|"pending changes"| ingest
+    ingest -->|"ack + indexed state"| queue
+    ingest --> model --> os
+    ingest --> os
+    catalog -->|"/studies /variables /citations search"| api
+    dash -->|"/admin/* jobs, recreate, diff"| api
+    api --> model
+    api --> os
 ```
 
-| Piece | Runs a neural model? | Role |
-|-------|----------------------|------|
-| Local NADA / Data Compass | No | Serves catalog metadata |
-| `ai4data.discovery` | No | HTTP client + JSON → searchable text |
-| Harrier (`SentenceTransformer`) | **Yes — in nada-ai** | Text → 640-dim dense vector |
-| FastEmbed BM25 | **Yes — in nada-ai** (lexical) | Text → sparse token vector |
-| Qdrant | **No** | Persist vectors + payload; nearest-neighbor search |
-| FastAPI `:8020` | Loads models on warmup | Encode the query, call Qdrant, return hits |
+- NADA owns the catalog. nada-ai only reads it, always by NADA's internal study id (`sid`).
+- NADA records changes in its search-index queue. nada-ai pulls the queue, indexes or deletes, then acknowledges each
+  item and reports what it indexed. NADA never pushes to nada-ai.
+- NADA's catalog page sends searches to nada-ai and loads the rows of each page from its own database.
+- NADA's Search index page drives nada-ai's admin API: full index, per-type jobs, index rebuilds, diff and reconcile.
 
----
+## The four indexes
+
+All names derive from `NADA_INDEX_NAME` (default `nada-metadata`).
+
+| Index | Holds | Search | Feeds |
+|---|---|---|---|
+| `nada-metadata` (chunks) | Text chunks of each study with their embedding (`knn_vector`, FAISS HNSW, cosine) | Vector | Semantic and hybrid study search, `/search` |
+| `nada-metadata-studies` | One document per study, `_id` = `sid`: title, type, filters, counts, all-text field | Keyword (BM25) | `/studies/search`, facets |
+| `nada-metadata-variables` | One document per variable | Keyword only | `/variables/search` |
+| `nada-metadata-citations` | One document per citation | Keyword only | `/citations/search` |
+
+Only the chunk index holds embeddings. Rebuilding the study, variable or citation index never re-embeds anything.
+With the `local` backend, an unchanged chunk keeps its stored vector when a study is indexed again.
 
 ## Ingest
 
 ```mermaid
 flowchart LR
-  nada["NADA catalog"] --> ingest["nada-ai ingest<br/>CLI or POST /admin"]
-  ingest --> harrier["Harrier 270m<br/>in-process"]
-  ingest --> bm25["FastEmbed BM25<br/>in-process"]
-  harrier -->|"640-dim dense vector"| qdrant["Qdrant<br/>store only"]
-  bm25 -->|"sparse BM25 vector"| qdrant
-  ingest -->|"payload: text + filters"| qdrant
+    A["NADA extract API"] -->|"ai4data.discovery"| B["langdoc records"]
+    B -->|"batched"| C["embed chunks"]
+    C --> D["bulk write"]
+    B --> E["study document"]
+    E --> D
+    D --> F[("OpenSearch")]
+    B -.-> Q["quality report"]
 ```
 
-1. List records from the catalog (`index_from_catalog` or `index` by idno).
-2. `MetadataLoader` fetches JSON and builds **langdocs** (`page_content` + facets).
-3. The dense model encodes `page_content` → a 640-dim vector.
-4. FastEmbed encodes the same text → a sparse BM25 vector.
-5. Qdrant upserts one point per langdoc.
+1. `ai4data.discovery` fetches each study's full record from NADA's metadata-extract API by `sid` and turns it into
+   searchable text ("langdocs"). Filters come from the same payload.
+2. Chunks are embedded in batches and written to the chunk index. The study document goes to the study index.
+3. Microdata studies also write their variables. Citations are synced separately.
+4. Every document passes a non-blocking quality check.
 
-**Catalog URL** is `AI4DATA_METADATA_CATALOG_URL` (ai4data), not `NADA_*`.
+Jobs run in the API process, one at a time per catalog type, and can be cancelled and resumed. NADA's Search index
+page and the admin API start them; the CLI runs the same code in the foreground.
 
-- Unset → default [Data Compass](https://data-compass.ihsn.org/).
-- Classic mode: `GET …/api/catalog/search` then `GET …/api/catalog/json/{idno}`.
-- Extract mode (when `AI4DATA_METADATA_CATALOG_EXTRACT_PATH` is set): paginated `…/search-metadata-extract/studies` (typically needs `AI4DATA_METADATA_CATALOG_X_API_KEY`).
+## Keeping in sync
 
-JSON is cached under `AI4DATA_DISCOVERY_DATA_PATH` (default `./data/nada-discovery`).
+The sync scheduler runs inside the API (`NADA_RECONCILE_SEARCH_INDEX_ENABLED`, on by default). Every few minutes it
+reads NADA's queue, indexes or deletes each changed study or citation, acknowledges it, and, with
+`NADA_REPORT_SEARCH_INDEX_STATE_ENABLED=true`, reports the result to NADA's search-index state. NADA's Search index page
+reads that state to show coverage, errors and what is missing.
 
----
+`POST /admin/search-index/reconcile-diff` compares NADA's catalog with what is indexed, then indexes what is missing
+and deletes what NADA no longer has. Use it after an outage or a restore.
 
-## What Qdrant stores
+## Study search
 
-Each point is numbers + JSON. **Model weights are not stored.**
+`POST /studies/search` serves four modes:
 
-| Field | Content |
-|-------|---------|
-| Dense vector (unnamed `""`) | 640 floats, cosine distance |
-| Sparse vector `bm25` | FastEmbed BM25 indices/values |
-| Payload `page_content` | Searchable text |
-| Payload `metadata.*` | `idno`, type, years, countries, … (filters) |
+| Mode | When | How |
+|---|---|---|
+| `browse` | No query | Filters and sort on the study index |
+| `lexical` | Keyword search | BM25 on the study index; every match is returned and paged |
+| `semantic` | Meaning only | Vector search on the chunk index, collapsed to one hit per study, capped at `NADA_STUDIES_SEMANTIC_WINDOW` |
+| `hybrid` | A query with `auto` mode (the default) | The semantic studies fused by rank with the best keyword matches, then the remaining keyword matches |
 
-Qdrant has no idea the dense vector came from Harrier. If ingest used model A and search encodes the query with model B, nearest-neighbor is meaningless. Changing `NADA_EMBEDDING_MODEL_ID` requires recreating the collection and re-ingesting.
+Facet counts come from a second request on the study index, run next to the page request. Variable and citation search
+are keyword only and switch to cursor paging past `max_offset`.
 
----
+NADA reads which searches nada-ai serves from `GET /info`. See the
+[study](./studies-search-contract.md), [variable](./variables-search-contract.md) and
+[citation](./citations-search-contract.md) contracts.
 
-## Search
+## Embeddings
 
-```mermaid
-flowchart LR
-  client["Browser / curl<br/>POST /search"] --> api["FastAPI :8020"]
-  api --> harrier["Harrier<br/>encode the query"]
-  api --> bm25["BM25<br/>encode the query"]
-  harrier --> qdrant["Qdrant kNN"]
-  bm25 --> qdrant
-  qdrant -->|"ids + scores + payload"| api --> client
-```
+| `NADA_EMBEDDING_BACKEND` | Where the model runs | Notes |
+|---|---|---|
+| `local` (default) | In the nada-ai process | `microsoft/harrier-oss-v1-270m`, 640 dimensions, multilingual. Downloaded once from Hugging Face, then cached |
+| `opensearch_ml` | Inside OpenSearch (ML Commons) | Needs `NADA_OPENSEARCH_ML_MODEL_ID` and the dimension. NADA's study search is keyword only: semantic and hybrid need `local` |
+| `none` | Nowhere | Keyword search only; semantic and hybrid are not offered |
 
-The query is embedded **again in nada-ai** with the **same** models. Qdrant only compares that query vector to stored vectors.
+The query side uses the same model with a query prompt (`NADA_QUERY_PROMPT_NAME`, default `web_search_query`).
+Changing the model means recreating the chunk index and indexing again; `GET /admin/embeddings/drift` detects a
+mismatch.
 
-| `mode` | What Qdrant does |
-|--------|------------------|
-| `keyword` | Rank with the sparse BM25 vector |
-| `vector` | kNN on the dense Harrier vector |
-| `hybrid` | Both legs; nada-ai merges with RRF |
+In Docker, the API container mounts the host's Hugging Face cache and runs offline (`HF_HUB_OFFLINE=1`), so download
+the model on the host first. See [Download the Harrier model once](./opensearch-setup-guide.md#download-the-harrier-model-once).
 
-Warmup (`POST /health/embeddings/warmup`) loads the dense model into RAM so the first vector/hybrid search is not blocked on model load. It does not download catalog data.
+## Where the code lives
 
----
-
-## Models and cache
-
-With `NADA_EMBEDDING_BACKEND=local`, nada-ai runs models on the host or in the API container. Hugging Face is where weights are fetched **once**, then cached.
-
-| Role | Default | Library | Used for |
-|------|---------|---------|----------|
-| Dense (semantic) | `microsoft/harrier-oss-v1-270m` | SentenceTransformers / PyTorch | `vector` and the vector leg of `hybrid` |
-| Sparse (lexical) | `Qdrant/bm25` | FastEmbed | Keyword-ish ranking in Qdrant |
-
-There is no in-app model manager. Management is env vars + disk cache + (if the dense model changes) recreate index + re-ingest.
-
-### `NADA_*` knobs
-
-| Variable | Purpose |
-|----------|---------|
-| `NADA_EMBEDDING_BACKEND` | `local` (this stack) or `opensearch_ml` (OpenSearch only) |
-| `NADA_EMBEDDING_MODEL_ID` | Hugging Face id for the dense model |
-| `NADA_QUERY_PROMPT_NAME` | Named SentenceTransformer prompt (default `web_search_query`) |
-| `NADA_QUERY_PROMPT` | Literal prefix; overrides the name when set |
-| `NADA_EMBEDDING_DEVICE` | e.g. `cpu` in Docker, `mps` on Apple Silicon (host) |
-| `NADA_EMBEDDING_BATCH_SIZE` | Ingest batch size (default 32) |
-| `NADA_EMBEDDING_MAX_SEQ_LENGTH` | Longest input embedded, in tokens (default 1024, a full PDF page); longer texts are cut off for the vector only. Each chunk stores the cap its vector was made with, and a vector is reused only at the same cap, so a change re-embeds each chunk as it is next indexed |
-| `NADA_QDRANT_SPARSE_LEXICAL` | On by default; `false` skips BM25 |
-| `NADA_QDRANT_SPARSE_MODEL_ID` | Default `Qdrant/bm25` |
-
-### Cache locations
-
-| Env | Typical location |
-|-----|------------------|
-| `HF_HOME` | Host: `~/.cache/huggingface`. Compose: `/models/huggingface` |
-| `SENTENCE_TRANSFORMERS_HOME` | SentenceTransformers hub-style cache |
-
-`docker-compose.qdrant.yml` bind-mounts the host Hugging Face cache into the API container and sets `SENTENCE_TRANSFORMERS_HOME` to `/models/huggingface/hub` so the container reuses the same weights. A separate ST cache forces a second download (often via Hugging Face Xet), which can hang behind corporate TLS.
-
-Optional offline flags in that compose file: `HF_HUB_OFFLINE`, `HF_HUB_DISABLE_XET`, `TRANSFORMERS_OFFLINE`.
-
-Host ingest (`uv run` / `.venv`) and the API container are **separate processes**. Ingesting on the host does not load the model inside Docker; the API still needs warmup (or a first vector search) to load weights in the container.
-
----
-
-## Alternative: OpenSearch ML
-
-`NADA_EMBEDDING_BACKEND=opensearch_ml` runs embeddings **inside OpenSearch** (`NADA_OPENSEARCH_ML_MODEL_ID` + dimension). That path does not apply when `NADA_SEARCH_BACKEND=qdrant`.
-
-Keyword-only search can run without the dense model. Vector and hybrid cannot: those modes **are** nearest-neighbor on embeddings.
+| Area | Path |
+|---|---|
+| FastAPI app, admin API, jobs, scheduler | `src/nada_ai/app/` |
+| Ingest pipeline and NADA sync | `src/nada_ai/ingest/` |
+| OpenSearch mapping, queries, study/variable/citation search | `src/nada_ai/search/backend/opensearch/` |
+| Filters and facets | `src/nada_ai/filters/` |
+| NADA HTTP client used by the MCP server | `src/nada_ai/nada/` |
+| MCP server | `src/nada_ai/mcp_server/` |

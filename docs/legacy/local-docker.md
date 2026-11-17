@@ -1,7 +1,7 @@
 # Local Docker setup — start & index (Qdrant)
 
 > This page covers the **Qdrant** stack. For **OpenSearch**, the default backend, see the
-> [OpenSearch setup guide](./opensearch-setup-guide.md#4-start-the-local-docker-stack).
+> [OpenSearch setup guide](../opensearch-setup-guide.md#4-start-the-local-docker-stack).
 
 Day-to-day commands for the **nada-ai** stack already running locally via Docker Compose (Qdrant + FastAPI, both containerized). For first-time setup, TLS/corporate-proxy issues, or host-side ingest instead of Docker, see the full [Qdrant pipeline guide](./qdrant-pipeline-guide.md).
 
@@ -208,5 +208,5 @@ curl -s -X POST http://localhost:8020/search \
 ## Related docs
 
 - [Qdrant pipeline guide](./qdrant-pipeline-guide.md) — full setup, TLS/corporate-proxy notes, troubleshooting table
-- [Architecture](./architecture.md)
-- [README](../README.md) — full admin/ingest HTTP API reference
+- [Architecture](./architecture-qdrant.md)
+- [README](../../README.md) — full admin/ingest HTTP API reference

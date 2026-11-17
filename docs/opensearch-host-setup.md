@@ -151,7 +151,7 @@ sudo chown -R nada-ai: /opt/nada-ai /var/cache/uv /var/cache/huggingface
 # uv (https://docs.astral.sh/uv/getting-started/installation/), installed system-wide
 curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin sh
 
-sudo -u nada-ai git clone <nada-ai repository URL> /opt/nada-ai
+sudo -u nada-ai git clone https://github.com/mah0001/nada-ai.git /opt/nada-ai
 cd /opt/nada-ai
 sudo -u nada-ai env UV_CACHE_DIR=/var/cache/uv uv sync --extra local
 ```
@@ -333,6 +333,9 @@ server {
 ```
 
 If NADA runs on the same server, it can call `http://127.0.0.1:8020` directly and skip the proxy.
+
+The proxy also exposes the MCP endpoint `/mcp`, which has no authentication. Restrict it and turn on stateless
+mode as described in the [MCP guide](./mcp.md#exposing-it).
 
 ---
 

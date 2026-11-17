@@ -1,78 +1,100 @@
 # NADA search engine settings
 
-How NADA decides which engine answers a search, and how nada-ai fits in. The settings live in NADA (Site
-configurations > Search); nada-ai's own environment (`NADA_SEARCH_BACKEND`, `NADA_EMBEDDING_BACKEND`, index names)
+How NADA decides which engine answers a search, and how nada-ai fits in. The settings live in NADA, under **Site
+configurations > Search**. nada-ai's own environment (`NADA_SEARCH_BACKEND`, `NADA_EMBEDDING_BACKEND`, index names)
 describes the deployment and is not a NADA setting.
+
+nada-ai must run **OpenSearch** for NADA. On Qdrant it has no study, variable or citation search, and NADA treats that
+as a configuration error.
 
 ## Settings
 
-| Setting | Values | Notes |
+| Setting | Label in NADA | Values | Notes |
+|---|---|---|---|
+| `search_engine` | Search engine | `database`, `solr`, `nada_ai` | The engine that serves catalog search. |
+| `search_index_engine` | Index kept in sync | `none`, `solr`, `nada_ai` | The engine whose index NADA records changes for. |
+| `nada_ai_url` | NADA-AI API URL | URL, no trailing slash | Required before `nada_ai` can be chosen for either setting above. |
+| `nada_ai_api_key` | NADA-AI API Key | secret | A nada-ai **admin** key, sent as `X-NADA-Admin-Key`. Used for searches and for indexing from the Search index page. A read-only key cannot run indexing. |
+| `nada_ai_on_outage` | When NADA-AI is unavailable | `database` (default), `error` | What a search does while nada-ai is down. |
+| `nada_ai_multilingual` | Multilingual search | yes, no | Turn on when the embedding model matches queries across languages (the default Harrier model does). The home page then shows example searches in several languages. |
+| `nada_ai_debug` | NADA-AI debug | yes, no | Logs nada-ai request and response bodies, and may attach them to catalog API errors for signed-in administrators. Off in production. |
+
+Two more values are in `application/config/nada_ai.php`, not in the settings page:
+
+| Setting | Default | Notes |
 |---|---|---|
-| `search_engine` | `database`, `solr`, `opensearch`, `nada_ai_opensearch`, `nada_ai_qdrant` | The engine that serves catalog search. `opensearch` is NADA's own OpenSearch integration (its `nada*` indexes), unrelated to nada-ai's index. The two `nada_ai_*` values say which engine nada-ai is expected to run. |
-| `nada_ai_url` | URL | Required before a `nada_ai_*` engine can be selected. |
-| `nada_ai_api_key`, `nada_ai_admin_api_key` | secrets | Search calls, and the indexing dashboard's `/admin` calls. Never the same secret. |
-| `nada_ai_on_outage` | `database` (default), `error` | What a search does while nada-ai is down. |
-| `nada_ai_debug` | `true`, `false` | Attach request/response payloads for signed-in administrators. |
-| `nada_ai_timeout`, `nada_ai_breaker_cooldown` | seconds | `application/config/semantic_search.php`. |
+| `nada_ai_timeout` | 8 seconds | HTTP timeout for a search request (maximum 15). Keep it short: every search waits this long before falling back. |
+| `nada_ai_breaker_cooldown` | 30 seconds | How long nada-ai is not called after a failure that means it is down. |
 
-There is one engine setting, not one per search. Site settings win over the config files, which only supply defaults.
+Site settings win over the config files, which only supply defaults.
 
-In Site configurations > Search each engine is a collapsible section (Database, Solr, OpenSearch, nada-ai); the active one is
-marked, and "Use this engine" selects one (saved with the section's Save button). nada-ai is one section for both
-`nada_ai_*` values: a choice of the engine it runs (OpenSearch or Qdrant), then the connection, the outage behaviour and an
-Advanced fold, so the settings both engines share appear once.
+### Search engine and index engine
 
-## What each engine does
+The two settings are separate so an index can be built while the database still serves searches:
+
+1. Set **Index kept in sync** to NADA-AI. From then on, NADA records every study and citation change for nada-ai.
+2. Build the index from the **Search index** page (or nada-ai's own admin API).
+3. Set **Search engine** to NADA-AI.
+
+The search engine must be either `database` or the index engine. NADA refuses to save a search engine whose index is
+not kept in sync.
+
+## What each engine serves
 
 | `search_engine` | Studies | Variables | Citations |
 |---|---|---|---|
 | `database` | database | database | database |
 | `solr` | Solr | database | Solr |
-| `opensearch` | NADA's OpenSearch | database | NADA's OpenSearch |
-| `nada_ai_opensearch` | nada-ai's OpenSearch (order, counts, tab counts) | nada-ai | nada-ai |
-| `nada_ai_qdrant` | Qdrant's best semantic matches first, then the database keyword results | database | database |
+| `nada_ai` | nada-ai | nada-ai, when it reports variable search | nada-ai, when it reports citation search |
 
-The database always loads the rows of a page and serves the sidebar facets. With `nada_ai_qdrant` it also serves the
-totals and tab counts. NADA only reads which searches nada-ai has from `GET /info` (cached for a minute), so a nada-ai
-that gains a search is used without a NADA change. Solr and NADA's OpenSearch have a variable search, but the catalog's
-variable view is still served by the database for them.
+With `nada_ai`, nada-ai returns the order, counts and tab counts, and the database loads the rows of each page. NADA
+reads which searches nada-ai offers from `GET /info`, cached for a minute and kept for a day while nada-ai is down. A
+nada-ai that gains a search is used without a NADA change.
 
-**nada-ai must run what the setting says.** NADA reads the engine nada-ai reports (`/info`). If it differs from the
-`nada_ai_*` value, catalog searches fail with a message naming both, and the semantic search dashboard shows a banner; NADA
-does not guess. The settings page itself never contacts nada-ai. This also catches a nada-ai that was restarted on another backend, whose index would be empty or of the wrong kind.
+**nada-ai must run what NADA expects.** If `/info` reports any engine other than OpenSearch, catalog searches fail with
+a message naming both, and the Search index page shows a banner. The settings page itself never contacts nada-ai.
 
 ## When nada-ai does not answer
 
 | Situation | What happens |
 |---|---|
-| The engine lacks the search (nada-ai with Qdrant has no citation search) | The database serves it, every time. Not a fallback. |
-| A request the index cannot answer (no keyword, unpublished citations, admin-only filters, an unsupported sort or page size) | The database serves that request. |
+| nada-ai does not offer the search | The database serves it, every time. This is not a fallback. |
+| A request the index cannot answer: no keyword, unpublished citations, admin-only filters, an unsupported sort or page size | The database serves that request. |
 | nada-ai is down: no connection, timeout, HTTP 5xx except 501, HTTP 429 | `nada_ai_on_outage`: the database, or an error with the reason. |
-| nada-ai rejects the request: HTTP 4xx, or 501 (its engine lacks what was asked) | Always an error. A 501 means the site is set to something the running engine cannot do. |
+| nada-ai rejects the request: HTTP 4xx, or 501 | Always an error. A bad key or a search the engine does not have is a configuration problem, not an outage. |
 
-**Outage breaker.** A failure that means nada-ai is down opens a breaker for `nada_ai_breaker_cooldown` seconds (30):
-calls fail at once instead of each waiting for its own timeout. After the cooldown one request probes nada-ai; a success
-closes the breaker, a failure opens it again. The state is a few entries in NADA's file cache (`cache/`), shared by all
-PHP processes on the server; losing it costs a failed attempt or two. `GET /api/admin/semantic/engine_status` returns the
-engine, what serves what, nada-ai's capabilities, the breaker state and the fallbacks counted this hour. The semantic search
-dashboard shows it: a Search engine card on the Overview page, and a banner on every page while nada-ai runs another engine
-than the setting or is not answering.
+**Outage breaker.** A failure that means nada-ai is down opens a breaker for `nada_ai_breaker_cooldown` seconds.
+While it is open, calls fail at once instead of each waiting for its own timeout. After the cooldown, one request
+probes nada-ai: a success closes the breaker, a failure opens it again. The state is kept in NADA's file cache
+(`cache/`), shared by all PHP processes on the server.
+
+`GET /api/admin/semantic/engine_status` returns the engine, the index engine, what serves what, nada-ai's
+capabilities, the breaker state and this hour's fallbacks. The Search index page shows the same as a Search engine
+card on its Overview page.
 
 ## Change tracking
 
-NADA queues catalog changes for the engine that serves them, so an object type is tracked when the engine serving it is
-not the database. There is no setting for it. With `nada_ai_qdrant`, citations are served by the database, so their
-changes are not queued.
+While **Index kept in sync** is not `none`, NADA queues every study and citation change (create, update, delete) for
+that engine, whichever engine serves the searches. nada-ai pulls the queue and acknowledges each change; it does not
+receive pushes. See [Keep the index in sync with NADA](./opensearch-setup-guide.md#7-keep-the-index-in-sync-with-nada).
+
+nada-ai reads the queue and the catalog with a NADA API key (`AI4DATA_METADATA_CATALOG_X_API_KEY`). The key's user
+needs **Studies** view on every collection, to read each study's variables, and the **Search index** permission:
+view to read the queue, edit to read the metadata extract in batches, acknowledge changes and
+report what was indexed.
 
 ## Upgrading
 
-`php index.php cli/migrate latest` runs `20260926120001_rename_search_engine_settings`. It renames the stored settings
-(`search_provider` values `db`/`mysql`/`mysqli`/`sqlsrv` -> `database`, `solr` -> `solr`, `opensearch` -> `opensearch`,
-`semantic` -> `nada_ai_opensearch` when `semantic_search_engine` was `opensearch`, otherwise `nada_ai_qdrant`;
-`semantic_search_url|api_key|admin_api_key|debug` -> `nada_ai_url|api_key|admin_api_key|debug`) and drops
-`semantic_search_engine` and `citation_search_provider`. The plain Qdrant driver (`semantic_search_engine = qdrant`) no
-longer exists: those sites get `nada_ai_qdrant`, which is the driver that combines Qdrant with the database keyword
-search (what `qdrant_db` was). The migration is idempotent and one-way like NADA's other migrations: back up the
-database first. Run it **before** using the new code: until it has run, the new names are unset, so the site searches
-with the database. Settings kept in `application/config/config.php` (`search_provider`, `semantic_search_*`) must be
-renamed by hand.
+`php index.php cli/migrate latest` runs `20261107120004_rename_search_engine_settings`. It:
+
+- renames `search_provider` to `search_engine`: `db`, `mysql`, `mysqli`, `sqlsrv` become `database`; `solr` stays;
+  `semantic` becomes `nada_ai`; the earlier values `nada_ai_opensearch` and `nada_ai_qdrant` become `nada_ai`;
+- maps NADA's removed native OpenSearch engine (`opensearch`) to `database`;
+- renames `semantic_search_url`, `semantic_search_api_key` and `semantic_search_debug` to `nada_ai_url`,
+  `nada_ai_api_key` and `nada_ai_debug`;
+- folds a stored admin key (`semantic_search_admin_api_key` or `nada_ai_admin_api_key`) into `nada_ai_api_key`;
+- drops `semantic_search_engine` and `citation_search_provider`;
+- adds `search_index_engine`, set from the old search engine (`database` becomes `none`).
+
+The migration is idempotent and one-way, and works on MySQL and SQL Server. Back up the database first. Settings kept
+in `application/config/config.php` under the old names must be renamed by hand.

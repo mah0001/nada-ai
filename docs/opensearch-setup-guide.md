@@ -7,7 +7,8 @@ Harrier model or OpenSearch ML Commons).
 Running without Docker? Follow the [host setup guide](./opensearch-host-setup.md) to install OpenSearch and the API on
 the server, then come back here for [creating the indexes](#5-create-the-indexes) onward.
 
-Qdrant is still supported as an alternative backend: see the [Qdrant pipeline guide](./qdrant-pipeline-guide.md).
+OpenSearch is the engine NADA needs. nada-ai can also run on Qdrant, but then only its own `/search` endpoint works;
+the old Qdrant guides are in [legacy](./legacy/).
 
 **Contents**
 
@@ -36,7 +37,7 @@ flowchart LR
 ```
 
 nada-ai keeps **four indexes** in OpenSearch. NADA's catalog search (`/studies/search`, `/variables/search`,
-`/citations/search`) runs only on OpenSearch; Qdrant serves `/search` and the MCP tools only. All names derive from
+`/citations/search`) runs only on OpenSearch. All names derive from
 `NADA_INDEX_NAME` (default `nada-metadata`):
 
 | Index | Default name | Holds | Written by |
@@ -48,9 +49,8 @@ nada-ai keeps **four indexes** in OpenSearch. NADA's catalog search (`/studies/s
 
 Override any of them with `NADA_STUDIES_INDEX_NAME`, `NADA_VARIABLES_INDEX_NAME` or `NADA_CITATIONS_INDEX_NAME`.
 
-> **Two different "OpenSearch" settings in NADA.** NADA's own `opensearch` search engine is a separate integration
-> with its own `nada*` indexes. To use nada-ai, NADA's search engine must be **`nada_ai_opensearch`** (see
-> [Connect NADA](#8-connect-nada)).
+> **NADA's search engine for nada-ai is `nada_ai`** (shown as NADA-AI in Site configurations > Search). NADA's own
+> native OpenSearch engine has been removed. See [Connect NADA](#8-connect-nada).
 
 ---
 
@@ -61,7 +61,9 @@ Override any of them with `NADA_STUDIES_INDEX_NAME`, `NADA_VARIABLES_INDEX_NAME`
 - **Docker** with Compose v2 (local stack), or an OpenSearch cluster you can reach (production).
 - **OpenSearch 3.x** (the compose file and the mapping are tuned for **3.6 LTS**) with the **k-NN** plugin. The
   full OpenSearch distribution includes it.
-- A NADA instance and a NADA **admin** API key (the bulk metadata-extract endpoint is admin-only).
+- A NADA instance and a NADA API key whose user has the **Search index** permission (view and edit) and **Studies**
+  view on every collection, or a site admin's key. The metadata extract and the change queue need Search index; each
+  study's variables need Studies view.
 - Disk: about 1 GB for the Harrier model in the Hugging Face cache, plus the metadata cache under
   `./data/nada-discovery` and the OpenSearch data.
 
@@ -108,7 +110,7 @@ mkdir -p data/nada-discovery
 | `NADA_INDEX_NAME` | `nada-metadata` | Base name of the four indexes |
 | `NADA_ADMIN_API_KEY` | a long random secret | Auth is always on: without it (or a stored key) `/admin/*`, `/jobs`, `/info` and `/studies/search` answer 503. The OpenSearch compose file refuses to start without it. Generate one with `openssl rand -hex 32` |
 | `AI4DATA_METADATA_CATALOG_URL` | `https://nada.example.org/index.php` | Your NADA instance. From inside Docker, a NADA on the same machine is `http://host.docker.internal/...`, **not** `http://localhost/...` |
-| `AI4DATA_METADATA_CATALOG_X_API_KEY` | NADA admin API key | For the bulk metadata-extract endpoint. Never reuse `NADA_ADMIN_API_KEY` here |
+| `AI4DATA_METADATA_CATALOG_X_API_KEY` | NADA API key | Its NADA user needs the **Search index** permission (view and edit) for the metadata extract and the change queue, and **Studies** view on every collection for variables. Never reuse `NADA_ADMIN_API_KEY` here. The MCP tools also call NADA with this key: see the [MCP guide](./mcp.md#what-the-tools-can-see) |
 | `AI4DATA_DISCOVERY_DATA_PATH` | `./data/nada-discovery` | Metadata cache |
 
 ### OpenSearch connection (production)
@@ -132,14 +134,16 @@ mkdir -p data/nada-discovery
 | `NADA_QUERY_PROMPT_NAME` | `web_search_query` | Harrier's query prompt |
 | `NADA_EMBEDDING_DEVICE` | auto | `cpu`, `cuda` or `mps` (Apple Silicon, host runs only) |
 
-### Optional NADA sync
+### NADA sync
+
+Both are needed when NADA manages the index from its Search index page.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `NADA_RECONCILE_SEARCH_INDEX_ENABLED` | `false` | Poll NADA's search-index change queue from inside the API |
+| `NADA_RECONCILE_SEARCH_INDEX_ENABLED` | `true` | Poll NADA's search-index change queue from inside the API. While NADA is not tracking changes for nada-ai, it checks every `NADA_RECONCILE_SEARCH_INDEX_NOT_TRACKING_INTERVAL_SECONDS` (600) instead |
 | `NADA_RECONCILE_SEARCH_INDEX_INTERVAL_SECONDS` | `300` | |
 | `NADA_RECONCILE_SEARCH_INDEX_BATCH_LIMIT` | `50` | |
-| `NADA_REPORT_SEARCH_INDEX_STATE_ENABLED` | `false` | Report what was indexed or deleted back to NADA; needed for `reconcile-diff` |
+| `NADA_REPORT_SEARCH_INDEX_STATE_ENABLED` | `false` | **Set to `true` for NADA.** Reports what was indexed or deleted back to NADA. NADA's Search index page and `reconcile-diff` depend on it |
 
 Study search tuning (`NADA_STUDIES_*`) defaults come from the evaluation in
 [opensearch-search-evaluation.md](./opensearch-search-evaluation.md); leave them alone unless you are re-running it.
@@ -305,8 +309,8 @@ curl -s localhost:8020/search -H 'content-type: application/json' \
 After the first full index, NADA records catalog changes (create, update, delete) in its search-index queue. nada-ai
 works through the queue and acknowledges each change. Choose one way to run it:
 
-- **Inside the API (recommended):** set `NADA_RECONCILE_SEARCH_INDEX_ENABLED=true`. The scheduler shares the job
-  registry with admin and webhook reindexes, so they do not race. Check or pause it with
+- **Inside the API (recommended, on by default):** `NADA_RECONCILE_SEARCH_INDEX_ENABLED=true`. The scheduler shares
+  the job registry with admin and webhook reindexes, so they do not race. Check or pause it with
   `GET /admin/scheduler/status`, `POST /admin/scheduler/pause` and `POST /admin/scheduler/resume`.
 - **From cron:** `python -m nada_ai.ingest.cli reconcile_search_index --limit=50`, and
   `search_index_status` for the queue counts.
@@ -315,31 +319,39 @@ works through the queue and acknowledges each change. Choose one way to run it:
 indexed, then indexes what is missing and deletes what NADA no longer has, as one background job. On a fresh
 deployment that is the whole catalog, so it also works as the first full index. Use it after an outage or a restore.
 It needs `NADA_REPORT_SEARCH_INDEX_STATE_ENABLED=true` (nada-ai reports what it indexed back to NADA) and NADA's
-search-index tracking turned on.
+**Index kept in sync** setting (`search_index_engine`) set to NADA-AI.
 
 ---
 
 ## 8. Connect NADA
 
-1. Issue a **search key** for NADA (role `read`), separate from the admin key:
+NADA uses one nada-ai key, an **admin** key, for both searches and indexing.
+
+1. Issue an admin key for NADA, so it does not share `NADA_ADMIN_API_KEY`:
 
    ```bash
    curl -s -X POST localhost:8020/admin/keys -H "$H" -H 'content-type: application/json' \
-     -d '{"name": "nada-search", "role": "read"}'
+     -d '{"name": "nada", "role": "admin"}'
    ```
 
-   The raw key is shown once. Issue another with `"role": "admin"` for NADA's indexing dashboard if you do not want to
-   give it `NADA_ADMIN_API_KEY` itself.
+   The raw key is shown once.
 
-2. In NADA, open **Site configurations > Search** and set:
+2. In NADA, give the role that manages the index the **Search index** permission.
+
+3. In NADA, open **Site configurations > Search** and set:
 
    | NADA setting | Value |
    |---|---|
-   | Search engine | `nada_ai_opensearch` |
-   | `nada_ai_url` | The URL NADA's PHP server can reach nada-ai on, e.g. `http://127.0.0.1:8020` or `https://nada-ai.example.org` |
-   | `nada_ai_api_key` | The `read` key from step 1 |
-   | `nada_ai_admin_api_key` | An `admin` key; never the same value as the search key |
-   | `nada_ai_on_outage` | `database` (fall back to database search) or `error` |
+   | NADA-AI API URL | The URL NADA's PHP server can reach nada-ai on, e.g. `http://127.0.0.1:8020` or `https://nada-ai.example.org` |
+   | NADA-AI API Key | The admin key from step 1 |
+   | When NADA-AI is unavailable | Serve from the catalog database, or show an error |
+   | Multilingual search | On with the default Harrier model |
+   | Index kept in sync | NADA-AI |
+
+4. Build the index from NADA's **Search index** page, or with [section 6](#6-index-the-catalog). The database keeps
+   serving searches meanwhile.
+
+5. Set **Search engine** to NADA-AI.
 
 The full list of settings and how NADA falls back is in
 [nada-search-engine-settings.md](./nada-search-engine-settings.md).
@@ -385,6 +397,10 @@ OpenSearch computes the embeddings in an ingest pipeline, and queries use `neura
    ```
 
 Trade-off: the API stays small, but the cluster does the embedding work (plan ML node capacity).
+
+> **NADA's study search is keyword only with this option.** `/studies/search` serves `semantic` and `hybrid` only with
+> the `local` backend, so `GET /info` drops them and NADA searches studies by keyword. `/search` still uses the ML
+> Commons vectors; `/recommendations` needs `local`.
 
 ### Option C: lexical only (`none`)
 
@@ -444,7 +460,7 @@ Size the heap at half the host's RAM, at most about 31 GB, and set `vm.max_map_c
 | Task | How |
 |---|---|
 | Rebuild everything | `create_index --recreate=True`, then the ingest loop, then variable and citation syncs |
-| Rebuild only the study index (mapping change) | `POST /admin/index/studies/recreate?confirm=true`, then requeue every study from NADA (Semantic > Maintenance). Embeddings in the chunk index are reused |
+| Rebuild only the study index (mapping change) | `POST /admin/index/studies/recreate?confirm=true`, then requeue every study from NADA (Search index > Maintenance). Embeddings in the chunk index are reused |
 | Rebuild only variables or citations | `POST /admin/index/variables/recreate?confirm=true`, `POST /admin/index/citations/recreate?confirm=true` (background jobs) |
 | Reindex one study | `python -m nada_ai.ingest.cli index --sids=516`, or let the NADA sync pick it up |
 | Inspect a study's documents | `GET /admin/docs/{sid}` |
@@ -476,4 +492,5 @@ Size the heap at half the host's RAM, at most about 31 GB, and set `vm.max_map_c
 - [NADA search engine settings](./nada-search-engine-settings.md)
 - [Study](./studies-search-contract.md), [variable](./variables-search-contract.md) and
   [citation](./citations-search-contract.md) search contracts
-- [Qdrant pipeline guide](./qdrant-pipeline-guide.md): the alternative backend
+- [MCP guide](./mcp.md)
+- [Legacy Qdrant guides](./legacy/)

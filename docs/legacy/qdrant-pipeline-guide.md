@@ -2,7 +2,7 @@
 
 > **Qdrant is the alternative backend.** The default is OpenSearch, and NADA's catalog search (`/studies/search`,
 > `/variables/search`, `/citations/search`) runs only on OpenSearch. See the
-> [OpenSearch setup guide](./opensearch-setup-guide.md).
+> [OpenSearch setup guide](../opensearch-setup-guide.md).
 
 End-to-end instructions for ingesting NADA catalog metadata into **Qdrant** and searching via the **nada-ai** API. Covers both **running ingest on the host** (Qdrant in Docker) and **running everything in Docker**.
 
@@ -249,7 +249,7 @@ Then run `index_from_catalog` as above; cached JSON under `data/nada-discovery/m
 
 ### A6. (Optional) Sync dynamic filters
 
-After ingest, sync filter facets from the metadata-extract API (see also [dynamic-filters.md](./dynamic-filters.md)):
+After ingest, sync filter facets from the metadata-extract API (see also [dynamic-filters.md](../dynamic-filters.md)):
 
 ```bash
 uv run python -m nada_ai.filters.cli ensure-indexes
@@ -398,7 +398,7 @@ curl -s "${H[@]}" -X POST http://localhost:8020/admin/ingest/from-catalog \
 curl -s http://localhost:8020/jobs/<job_id>
 ```
 
-See [Admin API](GUIDE.md#admin-api-auth-rbac-audit-rate-limiting) in the developer guide for auth and roles, and the
+See [Admin API](../GUIDE.md#admin-api-auth-rbac-audit-rate-limiting) in the developer guide for auth and roles, and the
 OpenAPI page at `/docs` on a running API for every admin route.
 
 ### B8. Stop / reset
@@ -592,6 +592,6 @@ open http://localhost:8020/demo
 
 ## Related docs
 
-- [README](../README.md) — package overview, CLI, admin HTTP API  
-- [dynamic-filters.md](./dynamic-filters.md) — filter sync and facet search  
-- [ai4data discovery README](https://github.com/avsolatorio/ai4data/blob/main/src/ai4data/discovery/README.md) — catalog env vars and batch scrape  
+- [README](../../README.md) — package overview, CLI, admin HTTP API  
+- [dynamic-filters.md](../dynamic-filters.md) — filter sync and facet search  
+- [ai4data discovery README](https://github.com/mah0001/ai4data/blob/main/src/ai4data/discovery/README.md) — catalog env vars and batch scrape  
